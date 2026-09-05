@@ -1,5 +1,10 @@
 use datafusion::arrow::array::StringArray;
 use datafusion::arrow::util::display::array_value_to_string;
+use datafusion::prelude::SessionContext;
+use datafusion_cli::exec::exec_from_files;
+use datafusion_cli::print_format::PrintFormat;
+use datafusion_cli::print_options::{MaxRows, PrintOptions};
+use std::path::PathBuf;
 use vector_core::{IndexConfig, IvfFlatConfig, Metric};
 use vector_datafusion::{VectorSqlOutput, VectorSqlSession};
 
@@ -13,6 +18,29 @@ fn session() -> VectorSqlSession {
             seed: 7,
         }),
     )
+}
+
+#[tokio::test]
+async fn public_file_runner_returns_missing_file_errors() {
+    let missing = PathBuf::from(format!(
+        "target/definitely-missing-cli-input-{}-{}.sql",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    let options = PrintOptions {
+        format: PrintFormat::Table,
+        quiet: true,
+        maxrows: MaxRows::Unlimited,
+        color: false,
+    };
+    let error = exec_from_files(
+        &SessionContext::new(),
+        vec![missing.to_string_lossy().into_owned()],
+        &options,
+    )
+    .await
+    .unwrap_err();
+    assert!(error.to_string().contains("No such file"), "{error}");
 }
 
 #[test]
