@@ -183,6 +183,13 @@ def main() -> None:
         "*/\n"
         "SELECT 64 AS after_interactive_nested;\n"
     )
+    trailing_line_comment_sql = (
+        "SELECT 65 AS before_trailing_line_comment; -- closed trailing comment\n"
+    )
+    trailing_block_comment_sql = (
+        "SELECT 66 AS before_trailing_block_comment; "
+        "/* closed trailing block; comment */\n"
+    )
 
     assert_redirected_sql(
         executable, interactive_multiline_sql, "after_interactive_multiline", 63
@@ -192,6 +199,18 @@ def main() -> None:
     )
     assert_redirected_sql(
         executable, preserved_literal_sql, "included_literal_length", 13
+    )
+    assert_redirected_sql(
+        executable,
+        trailing_line_comment_sql,
+        "before_trailing_line_comment",
+        65,
+    )
+    assert_redirected_sql(
+        executable,
+        trailing_block_comment_sql,
+        "before_trailing_block_comment",
+        66,
     )
 
     terminal = Terminal(executable)
@@ -219,14 +238,18 @@ def main() -> None:
         terminal.wait_for_prompts(11)
         terminal.send(interactive_nested_sql)
         terminal.wait_for_prompts(12)
-        terminal.send(f"\\i {invalid_script_path}\n")
+        terminal.send(trailing_line_comment_sql)
         terminal.wait_for_prompts(13)
-        terminal.send("SELECT 43 AS continued_after_decode_error;\n")
+        terminal.send(trailing_block_comment_sql)
         terminal.wait_for_prompts(14)
-        terminal.send(f"\\i {missing_script_path}\n")
+        terminal.send(f"\\i {invalid_script_path}\n")
         terminal.wait_for_prompts(15)
-        terminal.send("SELECT 44 AS continued_after_open_error;\n")
+        terminal.send("SELECT 43 AS continued_after_decode_error;\n")
         terminal.wait_for_prompts(16)
+        terminal.send(f"\\i {missing_script_path}\n")
+        terminal.wait_for_prompts(17)
+        terminal.send("SELECT 44 AS continued_after_open_error;\n")
+        terminal.wait_for_prompts(18)
         transcript = terminal.finish()
 
         if "Output format is Json." not in transcript:
@@ -253,6 +276,8 @@ def main() -> None:
         assert_json_value(transcript, "included_literal_length", 13)
         assert_json_value(transcript, "after_interactive_multiline", 63)
         assert_json_value(transcript, "after_interactive_nested", 64)
+        assert_json_value(transcript, "before_trailing_line_comment", 65)
+        assert_json_value(transcript, "before_trailing_block_comment", 66)
         if "ParserError" in transcript or "TokenizerError" in transcript:
             raise AssertionError(f"block comment was split as SQL; transcript:\n{transcript}")
         if "stream did not contain valid UTF-8" not in transcript:

@@ -93,7 +93,10 @@ impl CliHelper {
                 }
             };
             let (lines, remainder) = split_complete_from_semicolon(input, dialect.as_ref());
-            if !remainder.trim().is_empty() || lines.is_empty() {
+            if lines.is_empty()
+                || (!remainder.trim().is_empty()
+                    && !is_only_closed_comments_and_whitespace(&remainder, dialect.as_ref()))
+            {
                 return Ok(ValidationResult::Incomplete);
             }
             for line in lines {
@@ -114,6 +117,14 @@ impl CliHelper {
             Ok(ValidationResult::Valid(None))
         }
     }
+}
+
+fn is_only_closed_comments_and_whitespace(sql: &str, dialect: &dyn SqlDialect) -> bool {
+    Tokenizer::new(dialect, sql).tokenize().is_ok_and(|tokens| {
+        tokens
+            .iter()
+            .all(|token| matches!(token, Token::Whitespace(_)))
+    })
 }
 
 impl Default for CliHelper {
