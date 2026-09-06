@@ -1,7 +1,5 @@
 # Make the SQL Path Reach Your Index Safely
 
-{{#include rust-in-progress.md}}
-
 > **Day 1**
 >
 > Start from the two `*-starter` crates. Finish with ordinary Arrow tables, one

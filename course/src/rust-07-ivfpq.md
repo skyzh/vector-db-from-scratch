@@ -1,7 +1,5 @@
 # Compress IVFFlat with Product Quantization
 
-{{#include rust-in-progress.md}}
-
 > **Day 5**
 >
 > Complete [Add Hierarchy with HNSW](./rust-05-hnsw.md) first. Build a residual IVF-PQ index that scores compact codes,

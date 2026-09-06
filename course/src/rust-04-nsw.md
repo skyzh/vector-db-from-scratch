@@ -1,7 +1,5 @@
 # Navigate a Proximity Graph with NSW
 
-{{#include rust-in-progress.md}}
-
 > **Day 3**
 >
 > Complete [Narrow the Search with IVFFlat](./rust-03-ivfflat.md) first. You will replace centroid/list selection with graph

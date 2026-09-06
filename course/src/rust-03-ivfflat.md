@@ -1,7 +1,5 @@
 # Narrow the Search with IVFFlat
 
-{{#include rust-in-progress.md}}
-
 > **Day 2**
 >
 > Complete [Make the SQL Path Reach Your Index Safely](./rust-02-datafusion.md) first. Finish with a seeded IVFFlat

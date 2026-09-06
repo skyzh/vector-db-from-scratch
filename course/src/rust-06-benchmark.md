@@ -1,7 +1,5 @@
 # Benchmark Five Indexes on SIFT1M
 
-{{#include rust-in-progress.md}}
-
 > **Day 6**
 >
 > Complete [Compress IVFFlat with Product Quantization](./rust-07-ivfpq.md) first. Finish with one release-mode benchmark

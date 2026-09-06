@@ -1,7 +1,5 @@
 # Add Hierarchy with HNSW
 
-{{#include rust-in-progress.md}}
-
 > **Day 4**
 >
 > Complete [Navigate a Proximity Graph with NSW](./rust-04-nsw.md) first. You will turn that one-layer graph into a
