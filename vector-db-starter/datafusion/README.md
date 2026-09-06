@@ -9,5 +9,6 @@ Day 5.
 The crate includes the execution helpers you need, so you can focus on the
 explicit Day 1 TODOs in the guide.
 
-From the repository root, finish with `cargo x test-day 1`, then
-`cargo x test-through 1`.
+From the repository root, run `cargo xtask test day_01::checkpoint_N` for each
+test-bearing checkpoint. Finish with `cargo xtask test day_01`, then
+`cargo xtask test-through day_01`.

@@ -419,166 +419,172 @@ fn format_accounting(accounting: PqAccounting) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
+mod day_06 {
+    mod checkpoint_1 {
+        use super::super::*;
 
-    #[test]
-    fn day_06_inventory_and_configs_match_the_frozen_matrix() {
-        assert_eq!(INDEX_NAMES, ["flat", "ivf_flat", "nsw", "hnsw", "ivf_pq"]);
-        assert_eq!(ivf_flat_config().seed, 7);
-        assert_eq!(nsw_config().ef_search, 40);
-        assert_eq!((hnsw_config().max_level, hnsw_config().seed), (12, 7));
-        let pq = ivf_pq_config();
-        assert_eq!(
-            (pq.subquantizers, pq.codebook_size, pq.rerank, pq.seed),
-            (4, 16, 100, 7)
-        );
+        #[test]
+        fn inventory_and_configs_match_the_frozen_matrix() {
+            assert_eq!(INDEX_NAMES, ["flat", "ivf_flat", "nsw", "hnsw", "ivf_pq"]);
+            assert_eq!(ivf_flat_config().seed, 7);
+            assert_eq!(nsw_config().ef_search, 40);
+            assert_eq!((hnsw_config().max_level, hnsw_config().seed), (12, 7));
+            let pq = ivf_pq_config();
+            assert_eq!(
+                (pq.subquantizers, pq.codebook_size, pq.rerank, pq.seed),
+                (4, 16, 100, 7)
+            );
 
-        let dataset = Dataset::try_new(vec![
-            vec![1.0, 0.0, 0.0, 0.0],
-            vec![0.0, 1.0, 0.0, 0.0],
-            vec![0.0, 0.0, 1.0, 0.0],
-            vec![0.0, 0.0, 0.0, 1.0],
-            vec![1.0, 1.0, 0.0, 0.0],
-            vec![0.0, 1.0, 1.0, 0.0],
-            vec![0.0, 0.0, 1.0, 1.0],
-            vec![1.0, 0.0, 0.0, 1.0],
-        ])
-        .unwrap();
+            let dataset = Dataset::try_new(vec![
+                vec![1.0, 0.0, 0.0, 0.0],
+                vec![0.0, 1.0, 0.0, 0.0],
+                vec![0.0, 0.0, 1.0, 0.0],
+                vec![0.0, 0.0, 0.0, 1.0],
+                vec![1.0, 1.0, 0.0, 0.0],
+                vec![0.0, 1.0, 1.0, 0.0],
+                vec![0.0, 0.0, 1.0, 1.0],
+                vec![1.0, 0.0, 0.0, 1.0],
+            ])
+            .unwrap();
 
-        let nsw_config = NswConfig {
-            max_connections: 2,
-            ef_construction: 3,
-            ef_search: 4,
-        };
-        let nsw = build_nsw(dataset.clone(), Metric::Dot, nsw_config).unwrap();
-        assert_eq!(nsw.kind(), "nsw");
-        assert_eq!(nsw.dataset().vectors(), dataset.vectors());
-        assert_eq!(nsw.metric(), Metric::Dot);
-        assert!(
-            build_nsw(
-                dataset.clone(),
-                Metric::Dot,
-                NswConfig {
-                    max_connections: 0,
-                    ..nsw_config
-                },
-            )
-            .is_err()
-        );
+            let nsw_config = NswConfig {
+                max_connections: 2,
+                ef_construction: 3,
+                ef_search: 4,
+            };
+            let nsw = build_nsw(dataset.clone(), Metric::Dot, nsw_config).unwrap();
+            assert_eq!(nsw.kind(), "nsw");
+            assert_eq!(nsw.dataset().vectors(), dataset.vectors());
+            assert_eq!(nsw.metric(), Metric::Dot);
+            assert!(
+                build_nsw(
+                    dataset.clone(),
+                    Metric::Dot,
+                    NswConfig {
+                        max_connections: 0,
+                        ..nsw_config
+                    },
+                )
+                .is_err()
+            );
 
-        let hnsw_config = HnswConfig {
-            max_connections: 2,
-            ef_construction: 3,
-            ef_search: 4,
-            max_level: 3,
-            seed: 19,
-        };
-        let hnsw = build_hnsw(dataset.clone(), Metric::Cosine, hnsw_config).unwrap();
-        assert_eq!(hnsw.kind(), "hnsw");
-        assert_eq!(hnsw.dataset().vectors(), dataset.vectors());
-        assert_eq!(hnsw.metric(), Metric::Cosine);
-        assert!(
-            build_hnsw(
-                dataset.clone(),
-                Metric::Cosine,
-                HnswConfig {
-                    ef_search: 0,
-                    ..hnsw_config
-                },
-            )
-            .is_err()
-        );
+            let hnsw_config = HnswConfig {
+                max_connections: 2,
+                ef_construction: 3,
+                ef_search: 4,
+                max_level: 3,
+                seed: 19,
+            };
+            let hnsw = build_hnsw(dataset.clone(), Metric::Cosine, hnsw_config).unwrap();
+            assert_eq!(hnsw.kind(), "hnsw");
+            assert_eq!(hnsw.dataset().vectors(), dataset.vectors());
+            assert_eq!(hnsw.metric(), Metric::Cosine);
+            assert!(
+                build_hnsw(
+                    dataset.clone(),
+                    Metric::Cosine,
+                    HnswConfig {
+                        ef_search: 0,
+                        ..hnsw_config
+                    },
+                )
+                .is_err()
+            );
 
-        let ivf_pq_config = IvfPqConfig {
-            partitions: 2,
-            probes: 1,
-            iterations: 2,
-            subquantizers: 2,
-            codebook_size: 2,
-            rerank: 3,
-            seed: 23,
-        };
-        let ivf_pq = build_ivf_pq(dataset.clone(), Metric::Euclidean, ivf_pq_config).unwrap();
-        assert_eq!(ivf_pq.kind(), "ivf_pq");
-        assert_eq!(ivf_pq.dataset().vectors(), dataset.vectors());
-        assert_eq!(ivf_pq.metric(), Metric::Euclidean);
-        assert!(
-            build_ivf_pq(
-                dataset.clone(),
-                Metric::Euclidean,
-                IvfPqConfig {
-                    subquantizers: 3,
-                    ..ivf_pq_config
-                },
-            )
-            .is_err()
-        );
-        assert!(build_ivf_pq(dataset, Metric::Dot, ivf_pq_config).is_err());
+            let ivf_pq_config = IvfPqConfig {
+                partitions: 2,
+                probes: 1,
+                iterations: 2,
+                subquantizers: 2,
+                codebook_size: 2,
+                rerank: 3,
+                seed: 23,
+            };
+            let ivf_pq = build_ivf_pq(dataset.clone(), Metric::Euclidean, ivf_pq_config).unwrap();
+            assert_eq!(ivf_pq.kind(), "ivf_pq");
+            assert_eq!(ivf_pq.dataset().vectors(), dataset.vectors());
+            assert_eq!(ivf_pq.metric(), Metric::Euclidean);
+            assert!(
+                build_ivf_pq(
+                    dataset.clone(),
+                    Metric::Euclidean,
+                    IvfPqConfig {
+                        subquantizers: 3,
+                        ..ivf_pq_config
+                    },
+                )
+                .is_err()
+            );
+            assert!(build_ivf_pq(dataset, Metric::Dot, ivf_pq_config).is_err());
+        }
     }
+    mod checkpoint_2 {
+        use super::super::*;
 
-    #[test]
-    fn day_06_smoke_truth_is_recomputed_on_the_selected_base() {
-        let (truth, exact) =
-            select_exact_truth(Mode::Smoke, vec![99], || Ok::<_, &'static str>(vec![7])).unwrap();
-        assert_eq!(truth, Truth::RecomputedFlatSelectedBase);
-        assert_eq!(exact, [7]);
+        #[test]
+        fn smoke_truth_is_recomputed_on_the_selected_base() {
+            let (truth, exact) =
+                select_exact_truth(Mode::Smoke, vec![99], || Ok::<_, &'static str>(vec![7]))
+                    .unwrap();
+            assert_eq!(truth, Truth::RecomputedFlatSelectedBase);
+            assert_eq!(exact, [7]);
 
-        let (truth, exact) = select_exact_truth(Mode::Full, vec![99], || {
-            Err::<Vec<usize>, _>("full mode must not recompute")
-        })
-        .unwrap();
-        assert_eq!(truth, Truth::SuppliedSift1m);
-        assert_eq!(exact, [99]);
-    }
-
-    #[test]
-    fn day_06_result_validation_requires_complete_unique_public_order() {
-        let valid = (0..100)
-            .map(|row| Neighbor {
-                row,
-                distance: row as f32,
+            let (truth, exact) = select_exact_truth(Mode::Full, vec![99], || {
+                Err::<Vec<usize>, _>("full mode must not recompute")
             })
-            .collect::<Vec<_>>();
-        assert!(validate_neighbors(&valid, 10_000, 100).is_ok());
-        assert!(validate_neighbors(&valid[..99], 10_000, 100).is_err());
-    }
+            .unwrap();
+            assert_eq!(truth, Truth::SuppliedSift1m);
+            assert_eq!(exact, [99]);
+        }
 
-    #[test]
-    fn day_06_summary_uses_rank_prefixes_and_validates_query_shape() {
-        let neighbors = (0..100)
-            .map(|row| Neighbor {
-                row,
-                distance: row as f32,
-            })
-            .collect::<Vec<_>>();
-        let run = TimedRun {
-            latencies: vec![Duration::from_millis(1), Duration::from_millis(2)],
-            results: vec![neighbors.clone(), neighbors],
-        };
-        let measurement = summarize(&run, &[0, 5], 10_000).unwrap();
-        assert_eq!(measurement.search_time, Duration::from_millis(3));
-        assert_eq!(
-            measurement.recall,
-            RankRecall {
-                r1: 0.5,
-                r10: 1.0,
-                r100: 1.0,
-            }
-        );
-        assert_eq!(measurement.p50, Duration::from_millis(1));
-        assert_eq!(measurement.p99, Duration::from_millis(2));
-        assert!(summarize(&run, &[0], 10_000).is_err());
-    }
+        #[test]
+        fn result_validation_requires_complete_unique_public_order() {
+            let valid = (0..100)
+                .map(|row| Neighbor {
+                    row,
+                    distance: row as f32,
+                })
+                .collect::<Vec<_>>();
+            assert!(validate_neighbors(&valid, 10_000, 100).is_ok());
+            assert!(validate_neighbors(&valid[..99], 10_000, 100).is_err());
+        }
 
-    #[test]
-    fn day_06_full_accounting_matches_the_fixed_search_representation() {
-        let accounting = PqAccounting {
-            codes_bytes: 4_000_000,
-            codebooks_bytes: 8_192,
-            full_vectors_bytes: 512_000_000,
-        };
-        assert_eq!(accounting.search_bytes(), 4_008_192);
-        assert_eq!(format!("{:.1}", accounting.compression()), "127.7");
+        #[test]
+        fn summary_uses_rank_prefixes_and_validates_query_shape() {
+            let neighbors = (0..100)
+                .map(|row| Neighbor {
+                    row,
+                    distance: row as f32,
+                })
+                .collect::<Vec<_>>();
+            let run = TimedRun {
+                latencies: vec![Duration::from_millis(1), Duration::from_millis(2)],
+                results: vec![neighbors.clone(), neighbors],
+            };
+            let measurement = summarize(&run, &[0, 5], 10_000).unwrap();
+            assert_eq!(measurement.search_time, Duration::from_millis(3));
+            assert_eq!(
+                measurement.recall,
+                RankRecall {
+                    r1: 0.5,
+                    r10: 1.0,
+                    r100: 1.0,
+                }
+            );
+            assert_eq!(measurement.p50, Duration::from_millis(1));
+            assert_eq!(measurement.p99, Duration::from_millis(2));
+            assert!(summarize(&run, &[0], 10_000).is_err());
+        }
+
+        #[test]
+        fn full_accounting_matches_the_fixed_search_representation() {
+            let accounting = PqAccounting {
+                codes_bytes: 4_000_000,
+                codebooks_bytes: 8_192,
+                full_vectors_bytes: 512_000_000,
+            };
+            assert_eq!(accounting.search_bytes(), 4_008_192);
+            assert_eq!(format!("{:.1}", accounting.compression()), "127.7");
+        }
     }
 }

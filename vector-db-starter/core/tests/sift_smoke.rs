@@ -78,97 +78,107 @@ fn assert_quality(results: &[Vec<Neighbor>], workload: &Smoke, minimum_r100: f64
     assert!(total_r100 / results.len() as f64 >= minimum_r100);
 }
 
-#[test]
-#[ignore = "requires external SIFT1M data through SIFT1M_DIR"]
-fn day_06_sift_flat_smoke() {
-    let workload = smoke();
-    let index = FlatIndex::try_new(workload.dataset.clone(), Metric::Euclidean).unwrap();
-    assert_quality(&search_all(&index, &workload), &workload, 1.0);
-}
+mod day_06 {
+    mod checkpoint_2 {
+        use super::super::*;
 
-#[test]
-#[ignore = "requires external SIFT1M data through SIFT1M_DIR"]
-fn day_06_sift_ivf_flat_smoke() {
-    let workload = smoke();
-    for seed in SEEDS {
-        let config = IvfFlatConfig {
-            partitions: 32,
-            probes: 6,
-            iterations: 12,
-            seed,
-        };
-        let left =
-            IvfFlatIndex::try_new(workload.dataset.clone(), Metric::Euclidean, config).unwrap();
-        let right =
-            IvfFlatIndex::try_new(workload.dataset.clone(), Metric::Euclidean, config).unwrap();
-        let left = search_all(&left, &workload);
-        let right = search_all(&right, &workload);
-        assert_eq!(left, right);
-        assert_quality(&left, &workload, 0.05);
-    }
-}
+        #[test]
+        #[ignore = "requires external SIFT1M data through SIFT1M_DIR"]
+        fn sift_flat_smoke() {
+            let workload = smoke();
+            let index = FlatIndex::try_new(workload.dataset.clone(), Metric::Euclidean).unwrap();
+            assert_quality(&search_all(&index, &workload), &workload, 1.0);
+        }
 
-#[test]
-#[ignore = "requires external SIFT1M data through SIFT1M_DIR"]
-fn day_06_sift_nsw_smoke() {
-    let workload = smoke();
-    let index = NswIndex::try_new(
-        workload.dataset.clone(),
-        Metric::Euclidean,
-        NswConfig {
-            max_connections: 12,
-            ef_construction: 64,
-            ef_search: 40,
-        },
-    )
-    .unwrap();
-    let results = search_all(&index, &workload);
-    assert_quality(&results, &workload, 0.05);
-}
+        #[test]
+        #[ignore = "requires external SIFT1M data through SIFT1M_DIR"]
+        fn sift_ivf_flat_smoke() {
+            let workload = smoke();
+            for seed in SEEDS {
+                let config = IvfFlatConfig {
+                    partitions: 32,
+                    probes: 6,
+                    iterations: 12,
+                    seed,
+                };
+                let left =
+                    IvfFlatIndex::try_new(workload.dataset.clone(), Metric::Euclidean, config)
+                        .unwrap();
+                let right =
+                    IvfFlatIndex::try_new(workload.dataset.clone(), Metric::Euclidean, config)
+                        .unwrap();
+                let left = search_all(&left, &workload);
+                let right = search_all(&right, &workload);
+                assert_eq!(left, right);
+                assert_quality(&left, &workload, 0.05);
+            }
+        }
 
-#[test]
-#[ignore = "requires external SIFT1M data through SIFT1M_DIR"]
-fn day_06_sift_hnsw_smoke() {
-    let workload = smoke();
-    for seed in SEEDS {
-        let config = HnswConfig {
-            max_connections: 12,
-            ef_construction: 64,
-            ef_search: 40,
-            max_level: 12,
-            seed,
-        };
-        let left = HnswIndex::try_new(workload.dataset.clone(), Metric::Euclidean, config).unwrap();
-        let right =
-            HnswIndex::try_new(workload.dataset.clone(), Metric::Euclidean, config).unwrap();
-        let left = search_all(&left, &workload);
-        let right = search_all(&right, &workload);
-        assert_eq!(left, right);
-        assert_quality(&left, &workload, 0.05);
-    }
-}
+        #[test]
+        #[ignore = "requires external SIFT1M data through SIFT1M_DIR"]
+        fn sift_nsw_smoke() {
+            let workload = smoke();
+            let index = NswIndex::try_new(
+                workload.dataset.clone(),
+                Metric::Euclidean,
+                NswConfig {
+                    max_connections: 12,
+                    ef_construction: 64,
+                    ef_search: 40,
+                },
+            )
+            .unwrap();
+            let results = search_all(&index, &workload);
+            assert_quality(&results, &workload, 0.05);
+        }
 
-#[test]
-#[ignore = "requires external SIFT1M data through SIFT1M_DIR"]
-fn day_06_sift_ivf_pq_smoke() {
-    let workload = smoke();
-    for seed in SEEDS {
-        let config = IvfPqConfig {
-            partitions: 32,
-            probes: 6,
-            iterations: 12,
-            subquantizers: 4,
-            codebook_size: 16,
-            rerank: 100,
-            seed,
-        };
-        let left =
-            IvfPqIndex::try_new(workload.dataset.clone(), Metric::Euclidean, config).unwrap();
-        let right =
-            IvfPqIndex::try_new(workload.dataset.clone(), Metric::Euclidean, config).unwrap();
-        let left = search_all(&left, &workload);
-        let right = search_all(&right, &workload);
-        assert_eq!(left, right);
-        assert_quality(&left, &workload, 0.05);
+        #[test]
+        #[ignore = "requires external SIFT1M data through SIFT1M_DIR"]
+        fn sift_hnsw_smoke() {
+            let workload = smoke();
+            for seed in SEEDS {
+                let config = HnswConfig {
+                    max_connections: 12,
+                    ef_construction: 64,
+                    ef_search: 40,
+                    max_level: 12,
+                    seed,
+                };
+                let left = HnswIndex::try_new(workload.dataset.clone(), Metric::Euclidean, config)
+                    .unwrap();
+                let right = HnswIndex::try_new(workload.dataset.clone(), Metric::Euclidean, config)
+                    .unwrap();
+                let left = search_all(&left, &workload);
+                let right = search_all(&right, &workload);
+                assert_eq!(left, right);
+                assert_quality(&left, &workload, 0.05);
+            }
+        }
+
+        #[test]
+        #[ignore = "requires external SIFT1M data through SIFT1M_DIR"]
+        fn sift_ivf_pq_smoke() {
+            let workload = smoke();
+            for seed in SEEDS {
+                let config = IvfPqConfig {
+                    partitions: 32,
+                    probes: 6,
+                    iterations: 12,
+                    subquantizers: 4,
+                    codebook_size: 16,
+                    rerank: 100,
+                    seed,
+                };
+                let left = IvfPqIndex::try_new(workload.dataset.clone(), Metric::Euclidean, config)
+                    .unwrap();
+                let right =
+                    IvfPqIndex::try_new(workload.dataset.clone(), Metric::Euclidean, config)
+                        .unwrap();
+                let left = search_all(&left, &workload);
+                let right = search_all(&right, &workload);
+                assert_eq!(left, right);
+                assert_quality(&left, &workload, 0.05);
+            }
+        }
     }
 }

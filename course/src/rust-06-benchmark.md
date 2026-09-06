@@ -21,11 +21,7 @@ Your Day 5 starter already contains the five index implementations. Before openi
 paths green from the repository root:
 
 ```sh
-cargo test -p vector-db-from-scratch-datafusion-starter --test sqllogictest day_01_table_and_optimizer_sql -- --exact
-cargo test -p vector-db-from-scratch-datafusion-starter --test sqllogictest day_02_ivfflat_sql -- --exact
-cargo test -p vector-db-from-scratch-datafusion-starter --test sqllogictest day_03_nsw_sql -- --exact
-cargo test -p vector-db-from-scratch-datafusion-starter --test sqllogictest day_04_hnsw_sql -- --exact
-cargo test -p vector-db-from-scratch-datafusion-starter --test sqllogictest day_05_ivf_pq_sql -- --exact
+cargo xtask test-through day_05
 ```
 
 Now open:
@@ -54,7 +50,7 @@ They use tiny little-endian fixtures and deliberately corrupted inputs, so they 
 starter's example test is expected to stop at a Day 6 `todo!()` until you finish both checkpoints below:
 
 ```sh
-cargo test -p vector-db-from-scratch-core-starter --example recall
+cargo xtask test day_06
 ```
 
 ## Acquire and Validate SIFT1M
@@ -127,8 +123,7 @@ time.
 Before moving to reporting, rerun the invariant gate that permits more than one deterministic RNG trajectory:
 
 ```sh
-cargo test -p vector-db-from-scratch-core-starter --test indexes \
-  day_06_randomized_indexes_preserve_invariants_across_seed_trajectories -- --exact
+cargo xtask test day_06::checkpoint_1
 ```
 
 A seed promises repeatability within your implementation. It does not require your IVFFlat centroids or HNSW level
@@ -148,7 +143,7 @@ Do not replace it with interpolation or a floor fraction of `n - 1`; that would 
 four ownership points are complete, run the five behavioral example tests:
 
 ```sh
-cargo test -p vector-db-from-scratch-core-starter --example recall day_06_
+cargo xtask test day_06::checkpoint_2
 ```
 
 This gate pins the completed constructors and percentile selection, fixed inventory and configurations,
@@ -224,10 +219,12 @@ For one narrower external-data check, the supplied ignored tests expose each ind
 
 ```sh
 SIFT1M_DIR=/absolute/path/to/sift1M \
-  cargo test -p vector-db-from-scratch-core-starter --test sift_smoke day_06_sift_ivf_pq_smoke -- --ignored --exact
+  cargo test -p vector-db-from-scratch-core-starter --test sift_smoke \
+  day_06::checkpoint_2::sift_ivf_pq_smoke -- --ignored --exact
 ```
 
-The analogous test names are `day_06_sift_flat_smoke`, `day_06_sift_ivf_flat_smoke`, `day_06_sift_nsw_smoke`, and `day_06_sift_hnsw_smoke`. These
+The analogous test names end in `sift_flat_smoke`, `sift_ivf_flat_smoke`, `sift_nsw_smoke`, and
+`sift_hnsw_smoke` under the same `day_06::checkpoint_2` namespace. These
 tests use the fixed smoke subset. Flat must match exact rank recall; approximate indexes must return ordered unique rows,
 monotonic rank recall, same-implementation repeatability where seeded, and a broad `R@100 >= 0.05` floor. That floor is
 a bug detector, not a production-quality target.
@@ -265,8 +262,8 @@ fixed configuration. Do not infer a universal fastest index, quality ranking, or
 Run the Day 6 focused gate, then the complete cumulative course:
 
 ```sh
-cargo x test-day 6
-cargo x test-through 6
+cargo xtask test day_06
+cargo xtask test-through day_06
 ```
 
 These commands compile but do not execute the ignored external-corpus SIFT1M

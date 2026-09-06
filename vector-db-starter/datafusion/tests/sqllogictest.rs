@@ -145,66 +145,96 @@ async fn run_case(filename: &str, config: IndexConfig) {
     runner.shutdown_async().await;
 }
 
-#[tokio::test]
-async fn day_01_table_and_optimizer_sql() {
-    run_case("vector.01-index-match.slt", IndexConfig::Flat).await;
+mod day_01 {
+    mod checkpoint_5 {
+        use super::super::*;
+
+        #[tokio::test]
+        async fn table_and_optimizer_sql() {
+            run_case("vector.01-index-match.slt", IndexConfig::Flat).await;
+        }
+    }
 }
 
-#[tokio::test]
-async fn day_02_ivfflat_sql() {
-    run_case(
-        "vector.02-ivfflat.slt",
-        IndexConfig::IvfFlat(IvfFlatConfig {
-            partitions: 3,
-            probes: 3,
-            iterations: 8,
-            seed: 7,
-        }),
-    )
-    .await;
+mod day_02 {
+    mod checkpoint_5 {
+        use super::super::*;
+
+        #[tokio::test]
+        async fn ivfflat_sql() {
+            run_case(
+                "vector.02-ivfflat.slt",
+                IndexConfig::IvfFlat(IvfFlatConfig {
+                    partitions: 3,
+                    probes: 3,
+                    iterations: 8,
+                    seed: 7,
+                }),
+            )
+            .await;
+        }
+    }
 }
 
-#[tokio::test]
-async fn day_03_nsw_sql() {
-    run_case(
-        "vector.03-nsw.slt",
-        IndexConfig::Nsw(NswConfig {
-            max_connections: 4,
-            ef_construction: 8,
-            ef_search: 8,
-        }),
-    )
-    .await;
+mod day_03 {
+    mod checkpoint_4 {
+        use super::super::*;
+
+        #[tokio::test]
+        async fn nsw_sql() {
+            run_case(
+                "vector.03-nsw.slt",
+                IndexConfig::Nsw(NswConfig {
+                    max_connections: 4,
+                    ef_construction: 8,
+                    ef_search: 8,
+                }),
+            )
+            .await;
+        }
+    }
 }
 
-#[tokio::test]
-async fn day_04_hnsw_sql() {
-    run_case(
-        "vector.04-hnsw.slt",
-        IndexConfig::Hnsw(HnswConfig {
-            max_connections: 4,
-            ef_construction: 8,
-            ef_search: 8,
-            max_level: 4,
-            seed: 7,
-        }),
-    )
-    .await;
+mod day_04 {
+    mod checkpoint_3 {
+        use super::super::*;
+
+        #[tokio::test]
+        async fn hnsw_sql() {
+            run_case(
+                "vector.04-hnsw.slt",
+                IndexConfig::Hnsw(HnswConfig {
+                    max_connections: 4,
+                    ef_construction: 8,
+                    ef_search: 8,
+                    max_level: 4,
+                    seed: 7,
+                }),
+            )
+            .await;
+        }
+    }
 }
 
-#[tokio::test]
-async fn day_05_ivf_pq_sql() {
-    run_case(
-        "vector.05-ivfpq.slt",
-        IndexConfig::IvfPq(IvfPqConfig {
-            partitions: 2,
-            probes: 2,
-            iterations: 4,
-            subquantizers: 1,
-            codebook_size: 4,
-            rerank: 8,
-            seed: 7,
-        }),
-    )
-    .await;
+mod day_05 {
+    mod checkpoint_4 {
+        use super::super::*;
+
+        #[tokio::test]
+        async fn ivf_pq_sql() {
+            run_case(
+                "vector.05-ivfpq.slt",
+                IndexConfig::IvfPq(IvfPqConfig {
+                    partitions: 2,
+                    probes: 2,
+                    iterations: 4,
+                    subquantizers: 1,
+                    codebook_size: 4,
+                    rerank: 8,
+                    seed: 7,
+                }),
+            )
+            .await;
+        }
+    }
 }

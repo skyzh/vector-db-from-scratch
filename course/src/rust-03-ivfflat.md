@@ -25,13 +25,13 @@ LIMIT 5;
 From the repository root, confirm the completed Day 1 case first:
 
 ```sh
-cargo test -p vector-db-from-scratch-datafusion-starter --test sqllogictest day_01_table_and_optimizer_sql
+cargo xtask test day_01
 ```
 
 Now run the Day 2 case before implementing IVFFlat:
 
 ```sh
-cargo test -p vector-db-from-scratch-datafusion-starter --test sqllogictest day_02_ivfflat_sql
+cargo xtask test day_02::checkpoint_5
 ```
 
 This second command is your product-level expected failure. It uses the same DataFusion integration with
@@ -70,7 +70,7 @@ within `k`, not always `k` itself. If exact search returns two rows for `k = 10`
 those two rows. Define recall as `1.0` when that denominator is zero; an empty request has missed nothing.
 
 ```sh
-cargo test -p vector-db-from-scratch-core-starter --test indexes day_02_recall_reports_result_overlap
+cargo xtask test day_02::checkpoint_1
 ```
 
 This function gives the approximate result a correctness meaning. Timing and cross-index comparison remain separate;
@@ -83,7 +83,7 @@ Implement the validation boundary at the start of `IvfFlatIndex::try_new`. The c
 cosine builds reject zero-norm rows just as exact search does.
 
 ```sh
-cargo test -p vector-db-from-scratch-core-starter --test indexes day_02_ivf_rejects_invalid_build_configuration
+cargo xtask test day_02::checkpoint_2
 ```
 
 Once invalid configurations fail before any training work, initialize the centroids. The starter supplies
@@ -164,8 +164,7 @@ kept it? Which already validated row can safely replace it?
 Run the deterministic-build and zero-mean cases:
 
 ```sh
-cargo test -p vector-db-from-scratch-core-starter --test indexes day_02_ivf_build_is_seeded
-cargo test -p vector-db-from-scratch-core-starter --test indexes day_02_ivf_cosine_recovers_from_a_zero_mean_cluster
+cargo xtask test day_02::checkpoint_3
 ```
 
 ## Checkpoint 4: Probe Lists at Query Time
@@ -205,7 +204,7 @@ The decisive boundary is to probe every partition. IVFFlat then visits every dat
 ordered result as `FlatIndex`, including tie order:
 
 ```sh
-cargo test -p vector-db-from-scratch-core-starter --test indexes day_02_ivf_scanning_every_partition_matches_exact_search
+cargo xtask test day_02::checkpoint_4
 ```
 
 If this fails, inspect list completeness, metric choice, heap retention, and final sorting. With every list open,
@@ -216,7 +215,7 @@ approximation is no longer an explanation.
 Return to the product-level case you ran at the start:
 
 ```sh
-cargo test -p vector-db-from-scratch-datafusion-starter --test sqllogictest day_02_ivfflat_sql
+cargo xtask test day_02::checkpoint_5
 ```
 
 The SQL text and the matcher you implemented on Day 1 are unchanged. DataFusion passes `LIMIT 5` through Day 1's
@@ -251,8 +250,8 @@ while Day 6 owns the release-mode latency comparison across all five indexes.
 Run the Day 2 focused gate, then the cumulative course through Day 2:
 
 ```sh
-cargo x test-day 2
-cargo x test-through 2
+cargo xtask test day_02
+cargo xtask test-through day_02
 ```
 
 After the five Day 2 core tests, Day 2 SQLLogicTest, and product example pass, choose one concrete build and query

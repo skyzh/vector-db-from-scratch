@@ -10,5 +10,5 @@ otherwise.
 - Do not change public APIs or tests to make an implementation pass.
 - Preserve deterministic tie-breaking and the validation behavior described by
   each day.
-- Run the checkpoint's focused tests, then `cargo x test-day N` and
-  `cargo x test-through N`, before continuing to the next day.
+- Run `cargo xtask test day_NN::checkpoint_N` for the checkpoint, then
+  `cargo xtask test day_NN` and `cargo xtask test-through day_NN` before continuing.

@@ -4,7 +4,7 @@ mod dataset;
 mod flat;
 mod graph;
 #[cfg(test)]
-mod graph_tests;
+include!("graph_tests.rs");
 mod hnsw;
 mod ivf;
 mod metric;
