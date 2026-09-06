@@ -23,3 +23,10 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: check day-based learner test runner
         run: cargo test -p xtask --locked
+      - name: exercise canonical learner test commands
+        env:
+          XTASK_LIST_ONLY: "1"
+        run: |
+          cargo xtask test day_02::checkpoint_1
+          cargo xtask test day_02
+          cargo xtask test-through day_02

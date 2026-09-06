@@ -7,5 +7,5 @@ tests.
   remote branches, or published solutions.
 - You may read the Rust course pages and `../core`.
 - Preserve exact fallback for every unsupported physical-expression shape.
-- Run the focused tests listed for the day, then `cargo x test-day 1` and
-  `cargo x test-through 1`, before moving to IVFFlat.
+- Run `cargo xtask test day_01::checkpoint_N` for each test-bearing checkpoint,
+  then `cargo xtask test day_01` and `cargo xtask test-through day_01` before IVFFlat.

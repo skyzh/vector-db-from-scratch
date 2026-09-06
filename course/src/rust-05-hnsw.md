@@ -72,8 +72,7 @@ handoff, while layer zero will retain multiple candidates for top-k output.
 Run the focused helper test:
 
 ```sh
-cargo test -p vector-db-from-scratch-core-starter --lib \
-  graph_tests::day_04_greedy_search_moves_on_public_tie_order_and_respects_bounds -- --exact
+cargo xtask test day_04::checkpoint_1
 ```
 
 Its fixture begins at row 2. An equal-distance row 1 wins by row offset, while a closer row 3 is first excluded and then
@@ -131,8 +130,7 @@ dataset ordinals; the supplied DataFusion adapter maps those ordinals through it
 Run the construction test:
 
 ```sh
-cargo test -p vector-db-from-scratch-core-starter --test indexes \
-  day_04_hnsw_rejects_invalid_configuration_and_builds_seeded_nested_layers -- --exact
+cargo xtask test day_04::checkpoint_2
 ```
 
 It checks invalid budgets, same-implementation repeatability, nested membership, degree caps, and the absence of duplicate
@@ -170,32 +168,20 @@ return nearest k candidates
 The `.max(k)` floor separates the requested result count from the exploration hint. A caller asking for five rows with
 `ef_search = 1` still needs a result frontier capable of holding five rows.
 
-Run the query test:
+Run the Checkpoint 3 gate:
 
 ```sh
-cargo test -p vector-db-from-scratch-core-starter --test indexes \
-  day_04_hnsw_search_validates_widens_and_recovers_neighbors -- --exact
+cargo xtask test day_04::checkpoint_3
 ```
 
-It checks query validation, zero width, result ordering, the `ef_search.max(k)` floor, and one connected high-width
-fixture. Matching `FlatIndex` on that fixture is a bounded observation, not a promise that HNSW is exact for arbitrary
-datasets or search budgets.
+It checks query validation, zero width, result ordering, the `ef_search.max(k)` floor, one connected high-width fixture,
+and the supplied DataFusion EXPLAIN and SQL product paths. Matching `FlatIndex` on the core fixture is a bounded
+observation, not a promise that HNSW is exact for arbitrary datasets or search budgets.
 
 ## Return to the SQL Product
 
-First confirm that the unchanged Day 1 adapter can select the completed HNSW index:
-
-```sh
-cargo test -p vector-db-from-scratch-datafusion-starter --test sql day_04_hnsw_is_visible_in_explain
-```
-
-Then run the self-contained Day 4 SQLLogicTest:
-
-```sh
-cargo test -p vector-db-from-scratch-datafusion-starter --test sqllogictest day_04_hnsw_sql -- --exact
-```
-
-The fixture creates and populates its own table, checks the exact plan, attaches an HNSW index, and checks the changed
+The Checkpoint 3 gate confirms that the unchanged Day 1 adapter can select HNSW and runs the self-contained Day 4
+SQLLogicTest. The fixture creates and populates its own table, checks the exact plan, attaches an HNSW index, and checks the changed
 plan. Its indexed plan contains:
 
 ```text
@@ -224,8 +210,8 @@ rows without depending on mutable interactive-shell state.
 Run the Day 4 focused gate, then the cumulative course through Day 4:
 
 ```sh
-cargo x test-day 4
-cargo x test-through 4
+cargo xtask test day_04
+cargo xtask test-through day_04
 ```
 
 The runner selects only the tests assigned through HNSW, so unfinished Day 5

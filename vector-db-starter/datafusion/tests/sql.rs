@@ -145,272 +145,296 @@ async fn explain(context: &SessionContext, sql: &str) -> String {
     pretty_format_batches(&batches).unwrap().to_string()
 }
 
-#[tokio::test]
-async fn day_01_compatible_top_k_uses_vector_index_scan_and_keeps_sort() {
-    let context = context(Metric::Cosine, IndexConfig::Flat).await;
-    let sql = "SELECT id, payload FROM points \
-               ORDER BY cosine_distance(embedding, [1.0, 0.0, 0.0]) LIMIT 2";
-    let plan = explain(&context, sql).await;
-    assert!(plan.contains("VectorIndexScanExec"), "{plan}");
-    assert!(plan.contains("ordered=false"), "{plan}");
-    assert!(plan.contains("SortExec: TopK(fetch=2)"), "{plan}");
-    assert!(plan.contains("fetch=Some(2)"), "{plan}");
+mod day_01 {
+    mod checkpoint_3 {
+        use super::super::*;
 
-    let batches = context.sql(sql).await.unwrap().collect().await.unwrap();
-    let ids = batches[0]
-        .column(0)
-        .as_any()
-        .downcast_ref::<UInt64Array>()
-        .unwrap();
-    assert_eq!(ids.values(), &[10, 20]);
-}
+        #[tokio::test]
+        async fn rich_schema_matches_only_the_configured_vector_column() {
+            let context = context_with_batches(
+                "documents",
+                rich_schema_batches(),
+                "text_embedding",
+                Metric::Euclidean,
+                IndexConfig::Flat,
+            )
+            .await;
+            let text_sql = "SELECT price, doc_key, active, tenant_id, inventory FROM documents \
+                            ORDER BY array_distance(text_embedding, [1.0, 0.0, 0.0]) LIMIT 2";
+            let text_plan = explain(&context, text_sql).await;
+            assert!(text_plan.contains("VectorIndexScanExec"), "{text_plan}");
+            assert!(text_plan.contains("ordered=false"), "{text_plan}");
+            assert!(text_plan.contains("SortExec: TopK(fetch=2)"), "{text_plan}");
 
-#[tokio::test]
-async fn day_01_ordered_session_mode_allows_sort_elision() {
-    let context = context(Metric::Cosine, IndexConfig::Flat).await;
-    context
-        .sql("SET vector_search.ordered = true")
-        .await
-        .unwrap();
-    let sql = "SELECT id, payload FROM points \
-               ORDER BY cosine_distance(embedding, [1.0, 0.0, 0.0]) LIMIT 2";
-    let plan = explain(&context, sql).await;
-    assert!(plan.contains("VectorIndexScanExec"), "{plan}");
-    assert!(plan.contains("ordered=true"), "{plan}");
-    assert!(!plan.contains("SortExec"), "{plan}");
-}
+            let text = context
+                .sql(text_sql)
+                .await
+                .unwrap()
+                .collect()
+                .await
+                .unwrap();
+            assert_eq!(
+                text[0]
+                    .schema()
+                    .fields()
+                    .iter()
+                    .map(|field| field.name().as_str())
+                    .collect::<Vec<_>>(),
+                ["price", "doc_key", "active", "tenant_id", "inventory"]
+            );
+            assert_eq!(
+                text[0]
+                    .column(1)
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .unwrap()
+                    .iter()
+                    .collect::<Vec<_>>(),
+                [Some("alpha"), Some("beta")]
+            );
 
-#[tokio::test]
-async fn day_01_filter_keeps_datafusion_exact_fallback() {
-    let context = context(Metric::Cosine, IndexConfig::Flat).await;
-    let sql = "SELECT id FROM points WHERE payload = 'north' \
-               ORDER BY cosine_distance(embedding, [1.0, 0.0, 0.0]) LIMIT 1";
-    let plan = explain(&context, sql).await;
-    assert!(plan.contains("SortExec"), "{plan}");
-    assert!(plan.contains("DataSourceExec"), "{plan}");
-    assert!(!plan.contains("VectorIndexScanExec"), "{plan}");
-}
+            let image_sql = "SELECT price, doc_key, active, tenant_id, inventory FROM documents \
+                             ORDER BY array_distance(image_embedding, [1.0, 0.0, 0.0]) LIMIT 2";
+            let image_plan = explain(&context, image_sql).await;
+            assert!(image_plan.contains("DataSourceExec"), "{image_plan}");
+            assert!(
+                image_plan.contains("SortExec: TopK(fetch=2)"),
+                "{image_plan}"
+            );
+            assert!(!image_plan.contains("VectorIndexScanExec"), "{image_plan}");
+            let image = context
+                .sql(image_sql)
+                .await
+                .unwrap()
+                .collect()
+                .await
+                .unwrap();
+            assert_eq!(
+                image[0]
+                    .column(1)
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .unwrap()
+                    .iter()
+                    .collect::<Vec<_>>(),
+                [Some("delta"), Some("gamma")]
+            );
+        }
 
-#[tokio::test]
-async fn day_01_unsafe_sort_shapes_are_not_lowered() {
-    let context = context(Metric::Cosine, IndexConfig::Flat).await;
-    for sql in [
-        "SELECT id FROM points ORDER BY array_distance(embedding, [1.0, 0.0, 0.0]) LIMIT 2",
-        "SELECT id FROM points ORDER BY cosine_distance(embedding, [1.0, 0.0, 0.0]) DESC LIMIT 2",
-        "SELECT id FROM points ORDER BY cosine_distance(embedding, [1.0, 0.0, 0.0]), id LIMIT 2",
-        "SELECT id FROM points ORDER BY cosine_distance(embedding, embedding) LIMIT 2",
-    ] {
-        let plan = explain(&context, sql).await;
-        assert!(plan.contains("SortExec"), "{plan}");
-        assert!(!plan.contains("VectorIndexScanExec"), "{plan}");
+        #[tokio::test]
+        async fn rich_schema_rejects_a_missing_selected_column() {
+            let error = attachment_result(rich_schema_batches(), "missing_embedding")
+                .await
+                .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("vector column 'missing_embedding' does not exist or is ambiguous")
+            );
+        }
+
+        #[tokio::test]
+        async fn rich_schema_rejects_a_scalar_selected_column() {
+            let error = attachment_result(rich_schema_batches(), "price")
+                .await
+                .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("vector column 'price' must be FixedSizeList<Float32>")
+            );
+        }
+
+        #[tokio::test]
+        async fn rich_schema_rejects_a_zero_width_selected_column() {
+            let item = Arc::new(Field::new("item", DataType::Float32, false));
+            let schema = Arc::new(Schema::new(vec![Field::new(
+                "text_embedding",
+                DataType::FixedSizeList(Arc::clone(&item), 0),
+                false,
+            )]));
+            let batch = RecordBatch::try_new(
+                schema,
+                vec![Arc::new(FixedSizeListArray::new_null(item, 0, 0))],
+            )
+            .unwrap();
+            let error = attachment_result(vec![batch], "text_embedding")
+                .await
+                .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("vector column 'text_embedding' dimension must be greater than zero")
+            );
+        }
+
+        #[tokio::test]
+        async fn rich_schema_rejects_a_null_selected_value() {
+            let item = Arc::new(Field::new("item", DataType::Float32, false));
+            let schema = Arc::new(Schema::new(vec![Field::new(
+                "text_embedding",
+                DataType::FixedSizeList(Arc::clone(&item), 3),
+                true,
+            )]));
+            let vectors = FixedSizeListArray::try_new(
+                item,
+                3,
+                Arc::new(Float32Array::from(vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0])),
+                Some(NullBuffer::from(vec![true, false])),
+            )
+            .unwrap();
+            let batch = RecordBatch::try_new(schema, vec![Arc::new(vectors)]).unwrap();
+            let error = attachment_result(vec![batch], "text_embedding")
+                .await
+                .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("vector column 'text_embedding' contains null at row 1")
+            );
+        }
+    }
+    mod checkpoint_4 {
+        use super::super::*;
+
+        #[tokio::test]
+        async fn compatible_top_k_uses_vector_index_scan_and_keeps_sort() {
+            let context = context(Metric::Cosine, IndexConfig::Flat).await;
+            let sql = "SELECT id, payload FROM points \
+                       ORDER BY cosine_distance(embedding, [1.0, 0.0, 0.0]) LIMIT 2";
+            let plan = explain(&context, sql).await;
+            assert!(plan.contains("VectorIndexScanExec"), "{plan}");
+            assert!(plan.contains("ordered=false"), "{plan}");
+            assert!(plan.contains("SortExec: TopK(fetch=2)"), "{plan}");
+            assert!(plan.contains("fetch=Some(2)"), "{plan}");
+
+            let batches = context.sql(sql).await.unwrap().collect().await.unwrap();
+            let ids = batches[0]
+                .column(0)
+                .as_any()
+                .downcast_ref::<UInt64Array>()
+                .unwrap();
+            assert_eq!(ids.values(), &[10, 20]);
+        }
+
+        #[tokio::test]
+        async fn filter_keeps_datafusion_exact_fallback() {
+            let context = context(Metric::Cosine, IndexConfig::Flat).await;
+            let sql = "SELECT id FROM points WHERE payload = 'north' \
+                       ORDER BY cosine_distance(embedding, [1.0, 0.0, 0.0]) LIMIT 1";
+            let plan = explain(&context, sql).await;
+            assert!(plan.contains("SortExec"), "{plan}");
+            assert!(plan.contains("DataSourceExec"), "{plan}");
+            assert!(!plan.contains("VectorIndexScanExec"), "{plan}");
+        }
+
+        #[tokio::test]
+        async fn unsafe_sort_shapes_are_not_lowered() {
+            let context = context(Metric::Cosine, IndexConfig::Flat).await;
+            for sql in [
+                "SELECT id FROM points ORDER BY array_distance(embedding, [1.0, 0.0, 0.0]) LIMIT 2",
+                "SELECT id FROM points ORDER BY cosine_distance(embedding, [1.0, 0.0, 0.0]) DESC LIMIT 2",
+                "SELECT id FROM points ORDER BY cosine_distance(embedding, [1.0, 0.0, 0.0]), id LIMIT 2",
+                "SELECT id FROM points ORDER BY cosine_distance(embedding, embedding) LIMIT 2",
+            ] {
+                let plan = explain(&context, sql).await;
+                assert!(plan.contains("SortExec"), "{plan}");
+                assert!(!plan.contains("VectorIndexScanExec"), "{plan}");
+            }
+        }
+
+        #[tokio::test]
+        async fn dot_product_requires_descending_order() {
+            let context = context(Metric::Dot, IndexConfig::Flat).await;
+            let sql = "SELECT id FROM points \
+                       ORDER BY inner_product(embedding, [1.0, 0.0, 0.0]) DESC LIMIT 2";
+            let plan = explain(&context, sql).await;
+            assert!(plan.contains("VectorIndexScanExec"), "{plan}");
+            let batches = context.sql(sql).await.unwrap().collect().await.unwrap();
+            let ids = batches[0]
+                .column(0)
+                .as_any()
+                .downcast_ref::<UInt64Array>()
+                .unwrap();
+            assert_eq!(ids.values(), &[10, 20]);
+        }
+    }
+    mod checkpoint_5 {
+        use super::super::*;
+
+        #[tokio::test]
+        async fn ordered_session_mode_allows_sort_elision() {
+            let context = context(Metric::Cosine, IndexConfig::Flat).await;
+            context
+                .sql("SET vector_search.ordered = true")
+                .await
+                .unwrap();
+            let sql = "SELECT id, payload FROM points \
+                       ORDER BY cosine_distance(embedding, [1.0, 0.0, 0.0]) LIMIT 2";
+            let plan = explain(&context, sql).await;
+            assert!(plan.contains("VectorIndexScanExec"), "{plan}");
+            assert!(plan.contains("ordered=true"), "{plan}");
+            assert!(!plan.contains("SortExec"), "{plan}");
+        }
     }
 }
 
-#[tokio::test]
-async fn day_04_hnsw_is_visible_in_explain() {
-    let context = context(
-        Metric::Cosine,
-        IndexConfig::Hnsw(HnswConfig {
-            max_connections: 3,
-            ef_construction: 5,
-            ef_search: 5,
-            max_level: 4,
-            seed: 7,
-        }),
-    )
-    .await;
-    let plan = explain(
-        &context,
-        "SELECT id FROM points ORDER BY cosine_distance(embedding, [1.0, 0.0, 0.0]) LIMIT 2",
-    )
-    .await;
-    assert!(plan.contains("VectorIndexScanExec"), "{plan}");
-    assert!(plan.contains("index=hnsw"), "{plan}");
-    assert!(plan.contains("fetch=Some(2)"), "{plan}");
+mod day_04 {
+    mod checkpoint_3 {
+        use super::super::*;
+
+        #[tokio::test]
+        async fn hnsw_is_visible_in_explain() {
+            let context = context(
+                Metric::Cosine,
+                IndexConfig::Hnsw(HnswConfig {
+                    max_connections: 3,
+                    ef_construction: 5,
+                    ef_search: 5,
+                    max_level: 4,
+                    seed: 7,
+                }),
+            )
+            .await;
+            let plan = explain(
+                &context,
+                "SELECT id FROM points ORDER BY cosine_distance(embedding, [1.0, 0.0, 0.0]) LIMIT 2",
+            )
+            .await;
+            assert!(plan.contains("VectorIndexScanExec"), "{plan}");
+            assert!(plan.contains("index=hnsw"), "{plan}");
+            assert!(plan.contains("fetch=Some(2)"), "{plan}");
+        }
+    }
 }
 
-#[tokio::test]
-async fn day_05_ivf_pq_is_visible_in_explain() {
-    let context = context(
-        Metric::Euclidean,
-        IndexConfig::IvfPq(IvfPqConfig {
-            partitions: 2,
-            probes: 2,
-            iterations: 4,
-            subquantizers: 1,
-            codebook_size: 4,
-            rerank: 5,
-            seed: 7,
-        }),
-    )
-    .await;
-    let plan = explain(
-        &context,
-        "SELECT id FROM points ORDER BY array_distance(embedding, [1.0, 0.0, 0.0]) LIMIT 2",
-    )
-    .await;
-    assert!(plan.contains("VectorIndexScanExec"), "{plan}");
-    assert!(plan.contains("index=ivf_pq"), "{plan}");
-    assert!(plan.contains("fetch=Some(2)"), "{plan}");
-}
+mod day_05 {
+    mod checkpoint_3 {
+        use super::super::*;
 
-#[tokio::test]
-async fn day_01_dot_product_requires_descending_order() {
-    let context = context(Metric::Dot, IndexConfig::Flat).await;
-    let sql = "SELECT id FROM points \
-               ORDER BY inner_product(embedding, [1.0, 0.0, 0.0]) DESC LIMIT 2";
-    let plan = explain(&context, sql).await;
-    assert!(plan.contains("VectorIndexScanExec"), "{plan}");
-    let batches = context.sql(sql).await.unwrap().collect().await.unwrap();
-    let ids = batches[0]
-        .column(0)
-        .as_any()
-        .downcast_ref::<UInt64Array>()
-        .unwrap();
-    assert_eq!(ids.values(), &[10, 20]);
-}
-
-#[tokio::test]
-async fn day_01_rich_schema_matches_only_the_configured_vector_column() {
-    let context = context_with_batches(
-        "documents",
-        rich_schema_batches(),
-        "text_embedding",
-        Metric::Euclidean,
-        IndexConfig::Flat,
-    )
-    .await;
-    let text_sql = "SELECT price, doc_key, active, tenant_id, inventory FROM documents \
-                    ORDER BY array_distance(text_embedding, [1.0, 0.0, 0.0]) LIMIT 2";
-    let text_plan = explain(&context, text_sql).await;
-    assert!(text_plan.contains("VectorIndexScanExec"), "{text_plan}");
-    assert!(text_plan.contains("ordered=false"), "{text_plan}");
-    assert!(text_plan.contains("SortExec: TopK(fetch=2)"), "{text_plan}");
-
-    let text = context
-        .sql(text_sql)
-        .await
-        .unwrap()
-        .collect()
-        .await
-        .unwrap();
-    assert_eq!(
-        text[0]
-            .schema()
-            .fields()
-            .iter()
-            .map(|field| field.name().as_str())
-            .collect::<Vec<_>>(),
-        ["price", "doc_key", "active", "tenant_id", "inventory"]
-    );
-    assert_eq!(
-        text[0]
-            .column(1)
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .unwrap()
-            .iter()
-            .collect::<Vec<_>>(),
-        [Some("alpha"), Some("beta")]
-    );
-
-    let image_sql = "SELECT price, doc_key, active, tenant_id, inventory FROM documents \
-                     ORDER BY array_distance(image_embedding, [1.0, 0.0, 0.0]) LIMIT 2";
-    let image_plan = explain(&context, image_sql).await;
-    assert!(image_plan.contains("DataSourceExec"), "{image_plan}");
-    assert!(
-        image_plan.contains("SortExec: TopK(fetch=2)"),
-        "{image_plan}"
-    );
-    assert!(!image_plan.contains("VectorIndexScanExec"), "{image_plan}");
-    let image = context
-        .sql(image_sql)
-        .await
-        .unwrap()
-        .collect()
-        .await
-        .unwrap();
-    assert_eq!(
-        image[0]
-            .column(1)
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .unwrap()
-            .iter()
-            .collect::<Vec<_>>(),
-        [Some("delta"), Some("gamma")]
-    );
-}
-
-#[tokio::test]
-async fn day_01_rich_schema_rejects_a_missing_selected_column() {
-    let error = attachment_result(rich_schema_batches(), "missing_embedding")
-        .await
-        .unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("vector column 'missing_embedding' does not exist or is ambiguous")
-    );
-}
-
-#[tokio::test]
-async fn day_01_rich_schema_rejects_a_scalar_selected_column() {
-    let error = attachment_result(rich_schema_batches(), "price")
-        .await
-        .unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("vector column 'price' must be FixedSizeList<Float32>")
-    );
-}
-
-#[tokio::test]
-async fn day_01_rich_schema_rejects_a_zero_width_selected_column() {
-    let item = Arc::new(Field::new("item", DataType::Float32, false));
-    let schema = Arc::new(Schema::new(vec![Field::new(
-        "text_embedding",
-        DataType::FixedSizeList(Arc::clone(&item), 0),
-        false,
-    )]));
-    let batch = RecordBatch::try_new(
-        schema,
-        vec![Arc::new(FixedSizeListArray::new_null(item, 0, 0))],
-    )
-    .unwrap();
-    let error = attachment_result(vec![batch], "text_embedding")
-        .await
-        .unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("vector column 'text_embedding' dimension must be greater than zero")
-    );
-}
-
-#[tokio::test]
-async fn day_01_rich_schema_rejects_a_null_selected_value() {
-    let item = Arc::new(Field::new("item", DataType::Float32, false));
-    let schema = Arc::new(Schema::new(vec![Field::new(
-        "text_embedding",
-        DataType::FixedSizeList(Arc::clone(&item), 3),
-        true,
-    )]));
-    let vectors = FixedSizeListArray::try_new(
-        item,
-        3,
-        Arc::new(Float32Array::from(vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0])),
-        Some(NullBuffer::from(vec![true, false])),
-    )
-    .unwrap();
-    let batch = RecordBatch::try_new(schema, vec![Arc::new(vectors)]).unwrap();
-    let error = attachment_result(vec![batch], "text_embedding")
-        .await
-        .unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("vector column 'text_embedding' contains null at row 1")
-    );
+        #[tokio::test]
+        async fn ivf_pq_is_visible_in_explain() {
+            let context = context(
+                Metric::Euclidean,
+                IndexConfig::IvfPq(IvfPqConfig {
+                    partitions: 2,
+                    probes: 2,
+                    iterations: 4,
+                    subquantizers: 1,
+                    codebook_size: 4,
+                    rerank: 5,
+                    seed: 7,
+                }),
+            )
+            .await;
+            let plan = explain(
+                &context,
+                "SELECT id FROM points ORDER BY array_distance(embedding, [1.0, 0.0, 0.0]) LIMIT 2",
+            )
+            .await;
+            assert!(plan.contains("VectorIndexScanExec"), "{plan}");
+            assert!(plan.contains("index=ivf_pq"), "{plan}");
+            assert!(plan.contains("fetch=Some(2)"), "{plan}");
+        }
+    }
 }

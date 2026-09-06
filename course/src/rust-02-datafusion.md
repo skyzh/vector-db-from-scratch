@@ -79,8 +79,7 @@ every row for equal length and finite components. Store the vectors as
 for a query. Use the existing `VectorError` variants.
 
 ```sh
-cargo test -p vector-db-from-scratch-core-starter --test indexes day_01_flat_search_is_deterministic_and_validates_queries
-cargo test -p vector-db-from-scratch-core-starter --test indexes day_01_cosine_rejects_zero_norm_vectors
+cargo xtask test day_01::checkpoint_1
 ```
 
 ## Checkpoint 2: Build the Introductory MemTable
@@ -202,11 +201,7 @@ The rich-schema tests make the ownership rule observable: text and image vectors
 have identical shapes but different rankings.
 
 ```sh
-cargo test -p vector-db-from-scratch-datafusion-starter --test sql day_01_rich_schema_matches_only_the_configured_vector_column
-cargo test -p vector-db-from-scratch-datafusion-starter --test sql day_01_rich_schema_rejects_a_missing_selected_column
-cargo test -p vector-db-from-scratch-datafusion-starter --test sql day_01_rich_schema_rejects_a_scalar_selected_column
-cargo test -p vector-db-from-scratch-datafusion-starter --test sql day_01_rich_schema_rejects_a_zero_width_selected_column
-cargo test -p vector-db-from-scratch-datafusion-starter --test sql day_01_rich_schema_rejects_a_null_selected_value
+cargo xtask test day_01::checkpoint_3
 ```
 
 ## Checkpoint 4: Match and Rewrite One Safe Top-k
@@ -246,10 +241,7 @@ On a match, construct `VectorIndexScanExec`; otherwise leave the plan
 unchanged.
 
 ```sh
-cargo test -p vector-db-from-scratch-datafusion-starter --test sql day_01_compatible_top_k_uses_vector_index_scan_and_keeps_sort
-cargo test -p vector-db-from-scratch-datafusion-starter --test sql day_01_unsafe_sort_shapes_are_not_lowered
-cargo test -p vector-db-from-scratch-datafusion-starter --test sql day_01_filter_keeps_datafusion_exact_fallback
-cargo test -p vector-db-from-scratch-datafusion-starter --test sql day_01_dot_product_requires_descending_order
+cargo xtask test day_01::checkpoint_4
 ```
 
 ## Checkpoint 5: Search, Fetch, and Preserve ORDER BY
@@ -267,8 +259,7 @@ the default `ordered=false` path, clear that property and wrap the scan in
 candidates; DataFusion still owns SQL's nearest-first result.
 
 ```sh
-cargo test -p vector-db-from-scratch-datafusion-starter --test sql day_01_ordered_session_mode_allows_sort_elision
-cargo test -p vector-db-from-scratch-datafusion-starter --test sqllogictest day_01_table_and_optimizer_sql
+cargo xtask test day_01::checkpoint_5
 ```
 
 The SQLLogicTest starts from an empty session: it creates and inserts the simple `points` table and a rich `documents`
@@ -280,8 +271,8 @@ table, then attaches indexes to the selected columns. `text_embedding` reaches `
 Run the Day 1 focused and cumulative gates:
 
 ```sh
-cargo x test-day 1
-cargo x test-through 1
+cargo xtask test day_01
+cargo xtask test-through day_01
 ```
 
 After the core tests, `sql.rs`, and the Day 1 SQLLogicTest pass, explain:

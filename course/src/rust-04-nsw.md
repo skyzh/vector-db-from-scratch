@@ -118,8 +118,7 @@ previous rows `0..r` exist.
 Run only this checkpoint's supplied test:
 
 ```sh
-cargo test -p vector-db-from-scratch-core-starter \
-  graph_tests::day_03_search_layer_respects_bounds_and_expands_equal_frontier -- --exact
+cargo xtask test day_03::checkpoint_1
 ```
 
 Before the implementation it reaches the Day 3 traversal TODO. Afterward it checks allowed rows, disconnected
@@ -147,8 +146,7 @@ owner, break distance ties by row offset, and truncate to `max_connections`.
 Run the crate-internal helper test:
 
 ```sh
-cargo test -p vector-db-from-scratch-core-starter \
-  graph_tests::day_03_prune_neighbors_is_deterministic_and_bounded -- --exact
+cargo xtask test day_03::checkpoint_2
 ```
 
 Its direct fixture is self-free and isolates deduplication, ordering, tie-breaking, and the cap. The graph builder—not
@@ -173,8 +171,7 @@ The completed graph must be deterministic, duplicate-free, self-free, reciprocal
 Run its focused construction test:
 
 ```sh
-cargo test -p vector-db-from-scratch-core-starter --test indexes \
-  day_03_nsw_rejects_invalid_build_configuration_and_builds_a_bounded_reciprocal_graph -- --exact
+cargo xtask test day_03::checkpoint_3
 ```
 
 This test owns stored-vector and configuration validation plus the built-graph invariants. It does not require
@@ -193,8 +190,7 @@ The `.max(k)` floor separates the requested result count from the caller's explo
 Run the query test:
 
 ```sh
-cargo test -p vector-db-from-scratch-core-starter --test indexes \
-  day_03_nsw_search_validates_widens_and_matches_exact_on_connected_fixture -- --exact
+cargo xtask test day_03::checkpoint_4
 ```
 
 It checks query validation, zero width, the `ef_search.max(k)` floor, ordering, and one connected high-width fixture that
@@ -232,13 +228,8 @@ Both retain the supplied `SortExec` and show the same three rows:
 The example demonstrates the Day 2 → Day 3 handoff through the existing attachment, matcher, source-row lookup,
 and final sort. Equal rows here do not establish general recall, work, or performance.
 
-Keep the separate five-result SQL fixture green:
-
-```sh
-cargo test -p vector-db-from-scratch-datafusion-starter --test sqllogictest day_03_nsw_sql -- --exact
-```
-
-That SQLLogicTest uses a different eight-row fixture and `LIMIT 5`. It verifies `index=nsw`, the supplied final sort,
+The same Checkpoint 4 command also runs the separate five-result SQL fixture. That SQLLogicTest uses a different
+eight-row fixture and `LIMIT 5`. It verifies `index=nsw`, the supplied final sort,
 and its own five expected rows. Unsupported SQL shapes continue to use the supplied exact path.
 
 ## Day 3 Review
@@ -246,8 +237,8 @@ and its own five expected rows. Unsupported SQL shapes continue to use the suppl
 Run the Day 3 focused gate, then the cumulative course through Day 3:
 
 ```sh
-cargo x test-day 3
-cargo x test-through 3
+cargo xtask test day_03
+cargo xtask test-through day_03
 ```
 
 Choose one insertion and one query and explain:

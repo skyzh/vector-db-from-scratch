@@ -55,7 +55,8 @@ cargo check -p vector-db-from-scratch-datafusion-starter
 ```
 
 The focused tests initially stop at `todo!` calls. Each day names the exact tests that should pass before you move on,
-then closes with `cargo x test-day N` for that day's work and `cargo x test-through N` for the cumulative course.
+then closes with `cargo xtask test day_NN` for that day's work and
+`cargo xtask test-through day_NN` for the cumulative course.
 
 ## One Query, Two Plans
 

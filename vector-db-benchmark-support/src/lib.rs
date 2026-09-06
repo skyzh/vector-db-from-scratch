@@ -579,7 +579,7 @@ fn read_ivecs<R: Read>(
 }
 
 #[cfg(test)]
-mod tests {
+mod day_06 {
     use std::cell::RefCell;
     use std::fs;
     use std::io::Cursor;
@@ -587,228 +587,232 @@ mod tests {
 
     use super::*;
 
-    fn fvecs(records: &[&[f32]]) -> Vec<u8> {
-        let mut bytes = Vec::new();
-        for record in records {
-            bytes.extend_from_slice(&i32::try_from(record.len()).unwrap().to_le_bytes());
-            for value in *record {
-                bytes.extend_from_slice(&value.to_bits().to_le_bytes());
-            }
-        }
-        bytes
-    }
+    mod checkpoint_1 {
+        use super::*;
 
-    fn ivecs(records: &[&[i32]]) -> Vec<u8> {
-        let mut bytes = Vec::new();
-        for record in records {
-            bytes.extend_from_slice(&i32::try_from(record.len()).unwrap().to_le_bytes());
-            for value in *record {
-                bytes.extend_from_slice(&value.to_le_bytes());
-            }
-        }
-        bytes
-    }
-
-    #[test]
-    fn tiny_le_fixtures_decode_exact_values_and_ids() {
-        let mut vectors = Cursor::new(include_bytes!("../tests/fixtures/tiny.fvecs"));
-        let parsed = read_fvecs(&mut vectors, "tiny.fvecs", 2, 2, 2).unwrap();
-        assert_eq!(parsed, [vec![1.0, 2.0], vec![3.5, -4.0]]);
-
-        let mut ids = Cursor::new(include_bytes!("../tests/fixtures/tiny.ivecs"));
-        let parsed = read_ivecs(&mut ids, "sift_groundtruth.ivecs", 2, 3, 2, 4).unwrap();
-        assert_eq!(parsed, [vec![0, 2, 1], vec![3, 1, 0]]);
-    }
-
-    #[test]
-    fn cli_requires_an_explicit_full_or_fixed_smoke_run() {
-        assert_eq!(
-            parse_cli(["/data/sift1M"]).unwrap(),
-            Cli {
-                mode: Mode::Full,
-                data_dir: PathBuf::from("/data/sift1M"),
-            }
-        );
-        assert_eq!(
-            parse_cli(["--smoke", "/data/sift1M"]).unwrap().mode,
-            Mode::Smoke
-        );
-        for invalid in [vec![], vec!["--other"], vec!["/data", "--smoke"]] {
-            assert!(matches!(parse_cli(invalid), Err(SiftError::Usage)));
-        }
-        assert_eq!(SiftError::Usage.exit_code(), 2);
-    }
-
-    #[test]
-    fn file_boundary_reports_missing_and_exact_size_errors_before_decoding() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let directory = std::env::temp_dir().join(format!(
-            "vector-benchmark-support-{}-{nonce}",
-            std::process::id()
-        ));
-        fs::create_dir(&directory).unwrap();
-        let missing = directory.join("missing.fvecs");
-        assert!(matches!(
-            open_checked(&missing, "missing.fvecs", 12),
-            Err(SiftError::Missing(path)) if path == missing
-        ));
-
-        let short = directory.join("short.fvecs");
-        fs::write(&short, [0_u8; 8]).unwrap();
-        let error = open_checked(&short, "short.fvecs", 12).unwrap_err();
-        assert!(matches!(
-            error,
-            SiftError::Size {
-                expected: 12,
-                actual: 8,
-                ..
-            }
-        ));
-        assert_eq!(error.exit_code(), 1);
-        fs::remove_dir_all(directory).unwrap();
-    }
-
-    #[test]
-    fn decoder_rejects_each_structural_and_value_corruption() {
-        let good = fvecs(&[&[1.0, 2.0], &[3.0, 4.0]]);
-
-        let mut wrong_dimension = good.clone();
-        wrong_dimension[..4].copy_from_slice(&3_i32.to_le_bytes());
-        assert!(matches!(
-            read_fvecs(&mut Cursor::new(wrong_dimension), "tiny.fvecs", 2, 2, 2),
-            Err(SiftError::Dimension { record: 0, .. })
-        ));
-
-        assert!(matches!(
-            read_fvecs(&mut Cursor::new(&good[..1]), "tiny.fvecs", 2, 2, 2),
-            Err(SiftError::TruncatedHeader { record: 0, .. })
-        ));
-        assert!(matches!(
-            read_fvecs(&mut Cursor::new(&good[..10]), "tiny.fvecs", 2, 2, 2),
-            Err(SiftError::TruncatedPayload { record: 0, .. })
-        ));
-
-        let mut non_finite = good.clone();
-        non_finite[4..8].copy_from_slice(&f32::NAN.to_bits().to_le_bytes());
-        assert!(matches!(
-            read_fvecs(&mut Cursor::new(non_finite), "tiny.fvecs", 2, 2, 2),
-            Err(SiftError::NonFinite {
-                record: 0,
-                component: 0,
-                ..
-            })
-        ));
-
-        let mut trailing = good;
-        trailing.push(1);
-        assert!(matches!(
-            read_fvecs(&mut Cursor::new(trailing), "tiny.fvecs", 2, 2, 2),
-            Err(SiftError::Trailing { bytes: 1, .. })
-        ));
-    }
-
-    #[test]
-    fn ground_truth_rejects_negative_out_of_range_and_duplicate_ids() {
-        let cases = [
-            (ivecs(&[&[-1, 0]]), "negative"),
-            (ivecs(&[&[0, 4]]), "outside"),
-            (ivecs(&[&[1, 1]]), "duplicate"),
-        ];
-        for (bytes, expected) in cases {
-            let error = read_ivecs(
-                &mut Cursor::new(bytes),
-                "sift_groundtruth.ivecs",
-                1,
-                2,
-                1,
-                4,
-            )
-            .unwrap_err();
-            assert!(error.to_string().contains(expected));
-        }
-    }
-
-    #[test]
-    fn rank_recall_uses_first_neighbor_prefixes() {
-        assert_eq!(
-            rank_recall(&[7, 8, 9], 7),
-            RankRecall {
-                r1: 1.0,
-                r10: 1.0,
-                r100: 1.0,
-            }
-        );
-        let at_six = rank_recall(&[0, 1, 2, 3, 4, 7], 7);
-        assert_eq!((at_six.r1, at_six.r10, at_six.r100), (0.0, 1.0, 1.0));
-        let at_fifty_one = rank_recall(&(0..=50).collect::<Vec<_>>(), 50);
-        assert_eq!(
-            (at_fifty_one.r1, at_fifty_one.r10, at_fifty_one.r100),
-            (0.0, 0.0, 1.0)
-        );
-        assert_eq!(rank_recall(&[0, 1, 2], 9).r100, 0.0);
-    }
-
-    #[test]
-    fn balanced_runner_warms_twenty_then_times_every_query_cyclically() {
-        let queries = (0..23).map(|query| vec![query as f32]).collect::<Vec<_>>();
-        let trace = RefCell::new(Vec::new());
-        let runs = run_balanced(&queries, 5, 20, |index, query| {
-            trace.borrow_mut().push((index, query[0] as usize));
-            Ok::<_, ()>((index, query[0] as usize))
-        })
-        .unwrap();
-        let trace = trace.into_inner();
-        assert_eq!(trace.len(), (20 + 23) * 5);
-        for (phase_queries, phase) in [(20, &trace[..100]), (23, &trace[100..])] {
-            for (query, calls) in phase.as_chunks::<5>().0.iter().enumerate() {
-                assert!(query < phase_queries);
-                for (offset, (index, observed)) in calls.iter().enumerate() {
-                    assert_eq!(*index, (query + offset) % 5);
-                    assert_eq!(*observed, query);
+        fn fvecs(records: &[&[f32]]) -> Vec<u8> {
+            let mut bytes = Vec::new();
+            for record in records {
+                bytes.extend_from_slice(&i32::try_from(record.len()).unwrap().to_le_bytes());
+                for value in *record {
+                    bytes.extend_from_slice(&value.to_bits().to_le_bytes());
                 }
             }
+            bytes
         }
-        assert!(
-            runs.iter()
-                .all(|run| run.results.len() == 23 && run.latencies.len() == 23)
-        );
-    }
 
-    #[test]
-    fn balanced_runner_propagates_search_errors() {
-        let queries = vec![vec![0.0], vec![1.0]];
-        let result = run_balanced(&queries, 2, 0, |index, query| {
-            if index == 1 && query[0] == 0.0 {
-                Err("search failed")
-            } else {
-                Ok(())
+        fn ivecs(records: &[&[i32]]) -> Vec<u8> {
+            let mut bytes = Vec::new();
+            for record in records {
+                bytes.extend_from_slice(&i32::try_from(record.len()).unwrap().to_le_bytes());
+                for value in *record {
+                    bytes.extend_from_slice(&value.to_le_bytes());
+                }
             }
-        });
-        assert_eq!(result.unwrap_err(), "search failed");
-    }
+            bytes
+        }
 
-    #[test]
-    fn nearest_rank_percentile_covers_round_and_non_round_counts() {
-        let one = [Duration::from_micros(9)];
-        let two = [Duration::from_micros(2), Duration::from_micros(5)];
-        let hundred = (1..=100).map(Duration::from_micros).collect::<Vec<_>>();
-        let six = (1..=6).map(Duration::from_micros).collect::<Vec<_>>();
-        assert_eq!(percentile(&one, 99), one[0]);
-        assert_eq!(percentile(&two, 50), two[0]);
-        assert_eq!(percentile(&hundred, 99), Duration::from_micros(99));
-        assert_eq!(percentile(&six, 34), Duration::from_micros(3));
-    }
+        #[test]
+        fn tiny_le_fixtures_decode_exact_values_and_ids() {
+            let mut vectors = Cursor::new(include_bytes!("../tests/fixtures/tiny.fvecs"));
+            let parsed = read_fvecs(&mut vectors, "tiny.fvecs", 2, 2, 2).unwrap();
+            assert_eq!(parsed, [vec![1.0, 2.0], vec![3.5, -4.0]]);
 
-    #[test]
-    fn mode_labels_and_fixed_counts_cannot_claim_smoke_parity() {
-        assert_eq!(Mode::Full.base_rows(), 1_000_000);
-        assert_eq!(Mode::Full.query_rows(), 10_000);
-        assert_eq!(Mode::Full.parity_label(), "bustub-sift1m");
-        assert_eq!(Mode::Smoke.base_rows(), 10_000);
-        assert_eq!(Mode::Smoke.query_rows(), 100);
-        assert_eq!(Mode::Smoke.parity_label(), "non-parity");
+            let mut ids = Cursor::new(include_bytes!("../tests/fixtures/tiny.ivecs"));
+            let parsed = read_ivecs(&mut ids, "sift_groundtruth.ivecs", 2, 3, 2, 4).unwrap();
+            assert_eq!(parsed, [vec![0, 2, 1], vec![3, 1, 0]]);
+        }
+
+        #[test]
+        fn cli_requires_an_explicit_full_or_fixed_smoke_run() {
+            assert_eq!(
+                parse_cli(["/data/sift1M"]).unwrap(),
+                Cli {
+                    mode: Mode::Full,
+                    data_dir: PathBuf::from("/data/sift1M"),
+                }
+            );
+            assert_eq!(
+                parse_cli(["--smoke", "/data/sift1M"]).unwrap().mode,
+                Mode::Smoke
+            );
+            for invalid in [vec![], vec!["--other"], vec!["/data", "--smoke"]] {
+                assert!(matches!(parse_cli(invalid), Err(SiftError::Usage)));
+            }
+            assert_eq!(SiftError::Usage.exit_code(), 2);
+        }
+
+        #[test]
+        fn file_boundary_reports_missing_and_exact_size_errors_before_decoding() {
+            let nonce = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let directory = std::env::temp_dir().join(format!(
+                "vector-benchmark-support-{}-{nonce}",
+                std::process::id()
+            ));
+            fs::create_dir(&directory).unwrap();
+            let missing = directory.join("missing.fvecs");
+            assert!(matches!(
+                open_checked(&missing, "missing.fvecs", 12),
+                Err(SiftError::Missing(path)) if path == missing
+            ));
+
+            let short = directory.join("short.fvecs");
+            fs::write(&short, [0_u8; 8]).unwrap();
+            let error = open_checked(&short, "short.fvecs", 12).unwrap_err();
+            assert!(matches!(
+                error,
+                SiftError::Size {
+                    expected: 12,
+                    actual: 8,
+                    ..
+                }
+            ));
+            assert_eq!(error.exit_code(), 1);
+            fs::remove_dir_all(directory).unwrap();
+        }
+
+        #[test]
+        fn decoder_rejects_each_structural_and_value_corruption() {
+            let good = fvecs(&[&[1.0, 2.0], &[3.0, 4.0]]);
+
+            let mut wrong_dimension = good.clone();
+            wrong_dimension[..4].copy_from_slice(&3_i32.to_le_bytes());
+            assert!(matches!(
+                read_fvecs(&mut Cursor::new(wrong_dimension), "tiny.fvecs", 2, 2, 2),
+                Err(SiftError::Dimension { record: 0, .. })
+            ));
+
+            assert!(matches!(
+                read_fvecs(&mut Cursor::new(&good[..1]), "tiny.fvecs", 2, 2, 2),
+                Err(SiftError::TruncatedHeader { record: 0, .. })
+            ));
+            assert!(matches!(
+                read_fvecs(&mut Cursor::new(&good[..10]), "tiny.fvecs", 2, 2, 2),
+                Err(SiftError::TruncatedPayload { record: 0, .. })
+            ));
+
+            let mut non_finite = good.clone();
+            non_finite[4..8].copy_from_slice(&f32::NAN.to_bits().to_le_bytes());
+            assert!(matches!(
+                read_fvecs(&mut Cursor::new(non_finite), "tiny.fvecs", 2, 2, 2),
+                Err(SiftError::NonFinite {
+                    record: 0,
+                    component: 0,
+                    ..
+                })
+            ));
+
+            let mut trailing = good;
+            trailing.push(1);
+            assert!(matches!(
+                read_fvecs(&mut Cursor::new(trailing), "tiny.fvecs", 2, 2, 2),
+                Err(SiftError::Trailing { bytes: 1, .. })
+            ));
+        }
+
+        #[test]
+        fn ground_truth_rejects_negative_out_of_range_and_duplicate_ids() {
+            let cases = [
+                (ivecs(&[&[-1, 0]]), "negative"),
+                (ivecs(&[&[0, 4]]), "outside"),
+                (ivecs(&[&[1, 1]]), "duplicate"),
+            ];
+            for (bytes, expected) in cases {
+                let error = read_ivecs(
+                    &mut Cursor::new(bytes),
+                    "sift_groundtruth.ivecs",
+                    1,
+                    2,
+                    1,
+                    4,
+                )
+                .unwrap_err();
+                assert!(error.to_string().contains(expected));
+            }
+        }
+
+        #[test]
+        fn rank_recall_uses_first_neighbor_prefixes() {
+            assert_eq!(
+                rank_recall(&[7, 8, 9], 7),
+                RankRecall {
+                    r1: 1.0,
+                    r10: 1.0,
+                    r100: 1.0,
+                }
+            );
+            let at_six = rank_recall(&[0, 1, 2, 3, 4, 7], 7);
+            assert_eq!((at_six.r1, at_six.r10, at_six.r100), (0.0, 1.0, 1.0));
+            let at_fifty_one = rank_recall(&(0..=50).collect::<Vec<_>>(), 50);
+            assert_eq!(
+                (at_fifty_one.r1, at_fifty_one.r10, at_fifty_one.r100),
+                (0.0, 0.0, 1.0)
+            );
+            assert_eq!(rank_recall(&[0, 1, 2], 9).r100, 0.0);
+        }
+
+        #[test]
+        fn balanced_runner_warms_twenty_then_times_every_query_cyclically() {
+            let queries = (0..23).map(|query| vec![query as f32]).collect::<Vec<_>>();
+            let trace = RefCell::new(Vec::new());
+            let runs = run_balanced(&queries, 5, 20, |index, query| {
+                trace.borrow_mut().push((index, query[0] as usize));
+                Ok::<_, ()>((index, query[0] as usize))
+            })
+            .unwrap();
+            let trace = trace.into_inner();
+            assert_eq!(trace.len(), (20 + 23) * 5);
+            for (phase_queries, phase) in [(20, &trace[..100]), (23, &trace[100..])] {
+                for (query, calls) in phase.as_chunks::<5>().0.iter().enumerate() {
+                    assert!(query < phase_queries);
+                    for (offset, (index, observed)) in calls.iter().enumerate() {
+                        assert_eq!(*index, (query + offset) % 5);
+                        assert_eq!(*observed, query);
+                    }
+                }
+            }
+            assert!(
+                runs.iter()
+                    .all(|run| run.results.len() == 23 && run.latencies.len() == 23)
+            );
+        }
+
+        #[test]
+        fn balanced_runner_propagates_search_errors() {
+            let queries = vec![vec![0.0], vec![1.0]];
+            let result = run_balanced(&queries, 2, 0, |index, query| {
+                if index == 1 && query[0] == 0.0 {
+                    Err("search failed")
+                } else {
+                    Ok(())
+                }
+            });
+            assert_eq!(result.unwrap_err(), "search failed");
+        }
+
+        #[test]
+        fn nearest_rank_percentile_covers_round_and_non_round_counts() {
+            let one = [Duration::from_micros(9)];
+            let two = [Duration::from_micros(2), Duration::from_micros(5)];
+            let hundred = (1..=100).map(Duration::from_micros).collect::<Vec<_>>();
+            let six = (1..=6).map(Duration::from_micros).collect::<Vec<_>>();
+            assert_eq!(percentile(&one, 99), one[0]);
+            assert_eq!(percentile(&two, 50), two[0]);
+            assert_eq!(percentile(&hundred, 99), Duration::from_micros(99));
+            assert_eq!(percentile(&six, 34), Duration::from_micros(3));
+        }
+
+        #[test]
+        fn mode_labels_and_fixed_counts_cannot_claim_smoke_parity() {
+            assert_eq!(Mode::Full.base_rows(), 1_000_000);
+            assert_eq!(Mode::Full.query_rows(), 10_000);
+            assert_eq!(Mode::Full.parity_label(), "bustub-sift1m");
+            assert_eq!(Mode::Smoke.base_rows(), 10_000);
+            assert_eq!(Mode::Smoke.query_rows(), 100);
+            assert_eq!(Mode::Smoke.parity_label(), "non-parity");
+        }
     }
 }

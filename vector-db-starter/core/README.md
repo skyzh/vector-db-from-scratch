@@ -13,5 +13,5 @@ Across the six Rust days, you will use this crate to:
 Start with the existing metric math, deterministic `FlatIndex`, and top-k
 helpers. Run commands from the repository-root Cargo workspace.
 
-At the end of Day `N`, run `cargo x test-day N` for the new public contract and
-`cargo x test-through N` for every learner day completed so far.
+For checkpoint `M` on Day `NN`, run `cargo xtask test day_NN::checkpoint_M`. At the
+end of the day, run `cargo xtask test day_NN`, then `cargo xtask test-through day_NN`.
