@@ -1,7 +1,5 @@
 # Try the Vector Database from SQL
 
-{{#include rust-in-progress.md}}
-
 Before you implement the table adapter or optimizer, use the supplied system once. You will create and populate an
 ordinary in-memory table, run one nearest-neighbor query, attach an index to its vector column, and see the physical plan
 change while the SQL result stays the same.

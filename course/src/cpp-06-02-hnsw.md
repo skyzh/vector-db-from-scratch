@@ -1,4 +1,4 @@
-# HNSW (Hierarchical Navigable Small Worlds) Index (WIP)
+# HNSW (Hierarchical Navigable Small Worlds) Index
 
 {{#include cpp-deprecation.md}}
 

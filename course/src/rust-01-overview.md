@@ -1,7 +1,5 @@
 # Build Vector Search in Rust
 
-{{#include rust-in-progress.md}}
-
 <div class="warning">
 
 **Course status:** All six required days are ready to implement. The repository includes starter code, focused tests,
