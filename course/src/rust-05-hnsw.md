@@ -135,8 +135,8 @@ cargo xtask test day_04::checkpoint_2
 ```
 
 It exercises invalid budgets and metric data, repeated seeded builds, nested membership, the degree cap, and reciprocal
-edge cleanup. It also rejects forced level-zero sampling and injected self-edges. The test deliberately permits any
-level sequence produced repeatably by a valid implementation.
+edge cleanup. It also rejects injected self-edges; Checkpoint 3 is the first supplied gate that requires a positive
+promoted level. The test deliberately permits any level sequence produced repeatably by a valid implementation.
 
 ## Checkpoint 3: Search from the Top Layer
 
