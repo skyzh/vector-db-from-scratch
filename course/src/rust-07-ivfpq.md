@@ -110,7 +110,7 @@ starter reaches an earlier `todo!()` before it can exercise Day 5.
 This implementation accepts only `Metric::Euclidean`. Supporting cosine or inner product would change how vectors,
 residuals, and codeword scores relate, so those metrics return a configuration error here.
 
-## Checkpoint 1: Validate the Layout and Build Coarse Lists
+## Checkpoint 1: Validate the Layout
 
 Implement `IvfPqIndex::try_new`. Validate before training:
 
@@ -120,17 +120,19 @@ Implement `IvfPqIndex::try_new`. Validate before training:
 - `rerank > 0`; and
 - the metric is Euclidean.
 
-Build the coarse partition with the configured partitions, probes, iterations, and seed. Once its final centroids are
-known, assign every row again and compute `row - centroid`. That final reassignment gives every row exactly one list and
-ensures its residual uses the centroid for that list.
-
-Run the focused layout boundary:
+Run the focused validation boundary. Its supplied test checks the Euclidean-only metric and requires the subquantizer
+count to divide the vector dimension:
 
 ```sh
 cargo xtask test day_05::checkpoint_1
 ```
 
 ## Checkpoint 2: Train and Encode Residual Codebooks
+
+Continue `try_new` by building the coarse partition with the configured partitions, probes, iterations, and seed. Once
+its final centroids are known, assign every row again and compute `row - centroid`. That final reassignment gives every
+row exactly one list and ensures its residual uses the centroid for that list. Checkpoint 2 is the first supplied test
+that constructs a valid index and observes this path.
 
 Split every residual into equal contiguous slices. For each subquantizer:
 
