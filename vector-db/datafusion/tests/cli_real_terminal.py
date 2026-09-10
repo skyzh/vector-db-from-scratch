@@ -108,6 +108,18 @@ def assert_redirected_sql(executable: str, sql: str, marker: str, value: int) ->
         )
 
 
+def run_redirected_sql(executable: str, sql: str) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(
+        [executable], input=sql, text=True, capture_output=True, check=False
+    )
+    if result.returncode != 0:
+        raise AssertionError(
+            f"redirected SQL failed with {result.returncode}; "
+            f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+        )
+    return result
+
+
 def main() -> None:
     if len(sys.argv) != 2:
         raise SystemExit(f"usage: {sys.argv[0]} PATH_TO_SQL_EXAMPLE")
@@ -212,6 +224,56 @@ def main() -> None:
         "before_trailing_block_comment",
         66,
     )
+
+    vector_setup = (
+        "CREATE TABLE points (id BIGINT NOT NULL, payload VARCHAR NOT NULL, "
+        "embedding REAL[3] NOT NULL);\n"
+        "INSERT INTO points VALUES "
+        "(1, 'one', [1.0, 0.0, 0.0]), "
+        "(2, 'two', [0.9, 0.1, 0.0]), "
+        "(3, 'three', [0.0, 1.0, 0.0]), "
+        "(4, 'four', [-1.0, 0.0, 0.0]), "
+        "(5, 'five', [0.0, 0.0, 1.0]);\n"
+    )
+    vector_query = (
+        "SELECT id, payload FROM points "
+        "ORDER BY cosine_distance(embedding, [1.0, 0.0, 0.0]) LIMIT 3;\n"
+    )
+    notice = (
+        "Vector index selected: index=ivf_flat, metric=Cosine, "
+        "query_dim=3, fetch=3, ordered=false"
+    )
+
+    fallback = run_redirected_sql(executable, vector_setup + vector_query)
+    if "Vector index selected:" in fallback.stderr:
+        raise AssertionError(f"fallback emitted an index notice:\n{fallback.stderr}")
+    for value in ("one", "two", "three"):
+        if value not in fallback.stdout:
+            raise AssertionError(f"fallback result omitted {value}:\n{fallback.stdout}")
+
+    indexed = run_redirected_sql(
+        executable,
+        vector_setup
+        + "CREATE INDEX points_embedding_idx ON points USING ivfflat (embedding);\n"
+        + vector_query,
+    )
+    if indexed.stderr.splitlines() != [notice]:
+        raise AssertionError(f"unexpected index notice:\n{indexed.stderr}")
+    for value in ("one", "two", "three"):
+        if value not in indexed.stdout:
+            raise AssertionError(f"indexed result omitted {value}:\n{indexed.stdout}")
+
+    explained = run_redirected_sql(
+        executable,
+        vector_setup
+        + "CREATE INDEX points_embedding_idx ON points USING ivfflat (embedding);\n"
+        + "EXPLAIN "
+        + vector_query,
+    )
+    if "Vector index selected:" in explained.stderr:
+        raise AssertionError(f"EXPLAIN emitted an index notice:\n{explained.stderr}")
+    if "VectorIndexScanExec" not in explained.stdout:
+        raise AssertionError(f"EXPLAIN omitted the vector index plan:\n{explained.stdout}")
 
     terminal = Terminal(executable)
     try:

@@ -6,6 +6,7 @@ use datafusion::common::{DataFusionError, Result};
 use datafusion::dataframe::DataFrame;
 use datafusion::execution::{TaskContext, context::SessionState};
 use datafusion::logical_expr::LogicalPlan;
+use datafusion::physical_plan::{ExecutionPlan, displayable};
 use datafusion::prelude::SessionContext;
 use datafusion_cli::DATAFUSION_CLI_VERSION;
 use datafusion_cli::cli_context::CliSessionContext;
@@ -44,9 +45,31 @@ impl CliSessionContext for VectorCliContext {
         self.session.lock().await.validate_cli_sql(sql)
     }
 
+    fn observe_physical_plan(&self, plan: &dyn ExecutionPlan) {
+        if let Some(notice) = vector_index_notice(plan) {
+            eprintln!("Vector index selected: {notice}");
+        }
+    }
+
     async fn execute_logical_plan(&self, plan: LogicalPlan) -> Result<DataFrame> {
         self.session.lock().await.execute_cli_plan(plan).await
     }
+}
+
+fn vector_index_notice(plan: &dyn ExecutionPlan) -> Option<String> {
+    if plan.name() == "VectorIndexScanExec" {
+        let line = displayable(plan).one_line().to_string();
+        let details = line.trim().strip_prefix("VectorIndexScanExec: ")?;
+        return Some(
+            details
+                .replace("fetch=Some(", "fetch=")
+                .replace("), ordered=", ", ordered="),
+        );
+    }
+
+    plan.children()
+        .into_iter()
+        .find_map(|child| vector_index_notice(child.as_ref()))
 }
 
 #[tokio::main]
