@@ -1,23 +1,22 @@
 # Try the Vector Database from SQL
 
-Before you implement the table adapter or optimizer, use the supplied system once. You will create and populate an
-ordinary in-memory table, run one nearest-neighbor query, attach an index to its vector column, and see the physical plan
-change while the SQL result stays the same.
+Start by running the supplied system. This gives you the complete SQL path before Day 1 asks you to build it: an ordinary
+in-memory table answers an exact nearest-neighbor query, then an IVFFlat index changes how the database finds candidates.
+You will compare the plans and results from both runs.
 
-This tour uses the completed `vector-db-from-scratch-datafusion` example. You do not need to read or modify its source. Your own work begins
-on Day 1.
+The tour uses the completed `vector-db-from-scratch-datafusion` example. Leave its source as it is for now; your own work
+begins on Day 1.
 
 ## Launch the Supplied Shell
 
-For an interactive run, start from the repository root:
+From the repository root, launch an interactive session with:
 
 ```sh
 cargo run -p vector-db-from-scratch-datafusion --example sql
 ```
 
-The supplied DataFusion CLI starts with an empty course session and accepts semicolon-terminated SQL, including statements
-that span multiple lines. For a repeatable first run from the repository root, paste the whole transcript below into your
-terminal instead of entering the statements interactively:
+Each session starts empty. The supplied DataFusion CLI accepts semicolon-terminated SQL, including statements that span
+multiple lines. For a repeatable first run, paste this entire transcript into your terminal:
 
 ```sh
 cargo run -p vector-db-from-scratch-datafusion --example sql <<'SQL'
@@ -31,18 +30,19 @@ SELECT id, payload FROM points ORDER BY cosine_distance(embedding, [1.0, 0.0, 0.
 SQL
 ```
 
-Before you run it, predict which rows should be nearest and why creating an index must not change them.
+Before you run it, predict which rows the exact scan should rank nearest. Afterward, compare that answer with the indexed
+result and keep the approximate-search boundary in mind: the neighbors or their order may differ.
 
-## Observe the Stable Query and Changing Plan
+## Watch the Scan Change
 
-Before the index exists, DataFusion reads the ordinary in-memory table:
+The first `EXPLAIN` shows DataFusion reading the ordinary in-memory table:
 
 ```text
 SortExec: TopK(fetch=3), ...
   DataSourceExec: partitions=1, ...
 ```
 
-The first query returns these rows:
+The exact query returns:
 
 ```text
 1  one
@@ -50,50 +50,50 @@ The first query returns these rows:
 3  three
 ```
 
-**Prediction:** The next command attaches an index, but the following `SELECT` is byte-for-byte identical. Which physical
-plan leaf should change, and which three rows must not?
-
-The `CREATE INDEX` statement builds the session's cosine IVFFlat index and attaches it to the vector column you selected.
-The second `EXPLAIN` reaches the course-owned scan:
+The next command attaches an index. Although the following `SELECT` is byte-for-byte identical, its physical plan now
+reaches the course-owned scan:
 
 ```text
 SortExec: TopK(fetch=3), ...
   VectorIndexScanExec: index=ivf_flat, metric=Cosine, query_dim=3, fetch=Some(3), ordered=false
 ```
 
-The second query is byte-for-byte the same SQL and returns the same three rows. The index changes how candidates reach
-DataFusion's final sort; it does not change the query contract.
+When the second `SELECT` executes this plan, the shell confirms the choice on standard error:
 
-## Know What This Command Means
+```text
+Vector index selected: index=ivf_flat, metric=Cosine, query_dim=3, fetch=3, ordered=false
+```
+
+In this run, the indexed query returns rows 1, 2, and 3 in the same order as the exact scan. Treat that as one observation,
+not an IVFFlat guarantee. The index retrieves an approximate candidate set, so membership and ordering may change.
+DataFusion then applies the final sort to the candidates it received, using the same cosine distance and `LIMIT 3` from
+the SQL.
+
+## What `CREATE INDEX` Does Here
 
 DataFusion parses and logically plans `CREATE INDEX`, but the pinned version does not provide a physical executor that can
-build this course's index. The supplied shell therefore owns a bounded bridge from that statement to the course's existing
-attachment path. The session is configured for cosine IVFFlat, while the statement supplies the index name, resolved table,
-and selected column:
+build this course's index. The supplied shell handles that statement through a small bridge to the course's existing
+attachment path. The session is configured for cosine IVFFlat; the statement supplies the index name, table, and vector
+column:
 
 ```sql
 CREATE INDEX points_embedding_idx ON points USING ivfflat (embedding)
 ```
 
-The name may be any unused index name, and the table may be bare or schema/catalog qualified. The bridge can attach indexes
-to multiple distinct table/column pairs in one session. Each target must be a registered in-memory `MemTable`, and its
-selected column must be a non-null `REAL[N]` vector with positive width. Duplicate names or attachments, missing tables or
-columns, providers other than `MemTable`, nullable fields, vector fields with the wrong physical type or zero width, and an
-index kind different from the session configuration are rejected before an attachment is installed.
-
-**Prediction:** Suppose the session also contains another eligible table with a different vector field. Which table,
-column, and index names must the bridge resolve from the SQL statement rather than hard-code from this `points` example?
+The name may be any unused index name, and the table may be bare or schema/catalog qualified. A single session can attach
+indexes to several table and column pairs because the bridge resolves the target from each SQL statement; it does not
+hard-code the `points` example. Each table must be a registered in-memory `MemTable`, and the selected column must be a
+non-null `REAL[N]` vector with positive width. The shell rejects duplicate names or attachments, missing tables or columns,
+other provider types, nullable fields, incompatible vector fields, and an index kind that differs from the session
+configuration.
 
 An attachment is an immutable snapshot. After a table is indexed, `INSERT`, `ALTER TABLE`, and `DROP TABLE` against that
 table are rejected instead of making the index stale. Writes to unrelated tables remain legal, as does `INSERT ... SELECT`
-that reads indexed data into another table. The bridge does not add index persistence, `DROP INDEX`, automatic rebuilding,
-or a general catalog lifecycle.
+that reads indexed data into another table. A later insert would leave the snapshot behind, so the shell rejects it until
+the table update and a rebuilt index could become visible together. Index persistence, `DROP INDEX`, automatic rebuilding,
+and a general catalog lifecycle are outside this bridge.
 
-**Prediction:** Why must a later `INSERT` into the indexed table be rejected unless the table update and a rebuilt index
-can become visible atomically?
-
-That narrow boundary keeps the first experience concrete without turning the course into a parser or catalog project.
-Next, [Day 1](./rust-02-datafusion.md) opens the path you just used: you will build the Arrow table, attach one selected
-vector field, and make the optimizer choose `VectorIndexScanExec` only when doing so is safe.
+Next, [Day 1](./rust-02-datafusion.md) opens the path you just ran. You will build the Arrow table, attach one vector field,
+and make the optimizer choose `VectorIndexScanExec` only for a safe match.
 
 {{#include copyright.md}}

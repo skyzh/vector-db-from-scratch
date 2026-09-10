@@ -258,6 +258,7 @@ impl StatementExecutor {
             .create_and_execute_logical_plan(ctx, print_options)
             .await?;
         let physical_plan = df.create_physical_plan().await?;
+        ctx.observe_physical_plan(physical_plan.as_ref());
         let task_ctx = ctx.task_ctx();
         let options = task_ctx.session_config().options();
 

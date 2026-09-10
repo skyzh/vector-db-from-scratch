@@ -24,6 +24,7 @@ use datafusion::{
     error::DataFusionError,
     execution::{TaskContext, context::SessionState},
     logical_expr::LogicalPlan,
+    physical_plan::ExecutionPlan,
     prelude::SessionContext,
 };
 
@@ -40,6 +41,9 @@ pub trait CliSessionContext: Sync {
     async fn validate_sql(&self, _sql: &str) -> Result<(), DataFusionError> {
         Ok(())
     }
+
+    /// Observe the physical plan that is about to execute.
+    fn observe_physical_plan(&self, _plan: &dyn ExecutionPlan) {}
 
     /// Execute a logical plan and return a DataFrame.
     async fn execute_logical_plan(&self, plan: LogicalPlan) -> Result<DataFrame, DataFusionError>;
