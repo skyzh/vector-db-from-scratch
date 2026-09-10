@@ -6,10 +6,17 @@
 > explicitly attached vector index, and a conservative DataFusion optimizer
 > rule.
 
-In the [product tour](./rust-00-sql-shell.md), you began with an empty session, created and populated `points`, then ran the
-supplied shell before and after attaching an index to `embedding`. The SQL and nearest rows stayed fixed while the physical
-leaf changed from `DataSourceExec` to `VectorIndexScanExec`. Day 1 opens that path: you will build the Arrow table,
-bind one selected vector field to an index, and make the optimizer choose the new scan only when the query is safe.
+The [product tour](./rust-00-sql-shell.md) began with an empty session and an ordinary in-memory `points` table. Its first
+nearest-neighbor query used DataFusion's exact scan and returned rows 1, 2, and 3. After the tour attached an IVFFlat index
+to `embedding`, the same SQL reached `VectorIndexScanExec` and returned 1, 2, and 3 again. Rows 3 and 5 tie for that final
+slot, however, so SQL does not promise which one appears unless you add a secondary ordering key.
+
+That small example probes both of its two partitions and therefore scores all five rows. IVFFlat is still an approximate
+index when it probes only a subset of its partitions: it may omit a true neighbor before DataFusion sees the candidates.
+The final sort orders the rows it receives; it does not make the candidate set exact.
+
+Day 1 rebuilds the safe path beneath that tour. You will create an Arrow table, attach an exact `FlatIndex` to one selected
+vector field, and teach DataFusion to use the new scan only when the physical query matches the attachment.
 
 Your first query uses the course's small three-column table:
 
@@ -20,36 +27,34 @@ ORDER BY cosine_distance(embedding, [1.0, 0.0, 0.0])
 LIMIT 3;
 ```
 
-Without an index match, DataFusion scans the `MemTable`, computes every
-distance, and keeps the nearest three with a bounded sort:
+Before an index matches, DataFusion scans the `MemTable`, computes every distance, and keeps the nearest three with a
+bounded sort:
 
 ```text
 SortExec: TopK(fetch=3), ...
   DataSourceExec: partitions=1, ...
 ```
 
-That plan is exact for every valid query. A vector index can select candidates
-only when the SQL ordering refers to the same metric, literal, dimension,
-direction, and configured vector column. A match changes the leaf while leaving
-DataFusion's final sort in place by default:
+This fallback is exact for every valid query. An attachment may replace the leaf only when the SQL ordering uses its
+configured vector column with the expected metric, literal, dimension, and direction. A safe match leaves DataFusion's
+final sort in place by default:
 
 ```text
 SortExec: TopK(fetch=3), ...
   VectorIndexScanExec: index=flat, metric=Cosine, query_dim=3, fetch=Some(3), ordered=false
 ```
 
-Day 2 will put `index=ivf_flat` behind the same boundary.
+Day 2 will put `index=ivf_flat` behind this same boundary.
 
 ## From the Product Tour to Your First Checkpoint
 
-The product tour showed the complete path before asking you to build it. Keep
-these boundaries separate as you work through the day:
+The shell and its narrow `CREATE INDEX` bridge are already complete. So are the metric implementations, the exact
+`FlatIndex`, the public attachment and optimizer interfaces, and the snapshot lookup scaffolding. Examples and tests let
+you inspect both the physical plan and the returned rows.
 
-| What you observed | What is supplied | What you implement |
-| --- | --- | --- |
-| Ordinary SQL creates and fills `points`, then scans it; the supplied `CREATE INDEX` bridge changes only the physical leaf. | The shell, bounded DDL bridge, metric math, exact `FlatIndex`, and shared attachment/lookup scaffolding. | Checkpoint 1 validates the core `Dataset`. |
-| Both plans return the same rows and keep DataFusion's final sort. | Examples and tests that expose the plan and results. | Checkpoint 2 builds the introductory Arrow `MemTable`. |
-| The indexed leaf is chosen only for the configured vector field and safe query shape. | The public attachment and optimizer interfaces. | Checkpoints 3–5 attach one field, match a safe top-k, then search and fetch source rows. |
+Your five checkpoints fill in the path between those supplied pieces. First validate the core `Dataset`, then turn the
+small example into an Arrow `MemTable`. Next attach one selected field, recognize a safe top-k plan, and use index results
+to fetch complete source rows in SQL order.
 
 You will modify:
 
@@ -58,21 +63,16 @@ vector-db-starter/core/src/dataset.rs
 vector-db-starter/datafusion/src/lib.rs
 ```
 
-The starter exposes the same public API as the reference but leaves the Day 1
-implementation points as TODOs. Metric math, the exact `FlatIndex`, shared
-snapshot/lookup scaffolding, examples, and tests are ready. IVFFlat, NSW, HNSW,
-and IVF-PQ remain later learner work. Do not modify public APIs or tests while
-completing the exercises.
+The starter exposes the complete Day 1 API and marks your implementation points with TODOs. Work through those TODOs in
+checkpoint order, leaving the public APIs and tests unchanged. IVFFlat, NSW, HNSW, and IVF-PQ belong to later days.
 
 ## Checkpoint 1: Validate the In-Memory Dataset
 
 Implement the three TODOs in `vector-db-starter/core/src/dataset.rs`.
 
-A dataset must be nonempty, have a fixed nonzero dimension, and contain only
-finite `f32` values. `Dataset::try_new` reads the first row to establish the
-dimension, rejects an empty dataset or zero-dimensional vector, then checks
-every row for equal length and finite components. Store the vectors as
-`Arc<[Vec<f32>]>`.
+`Dataset::try_new` takes ownership of a nonempty set of finite `f32` vectors with one positive dimension. Use the first
+row to establish that dimension, reject an empty dataset or zero-dimensional vector, and check every remaining row for
+the same length and finite components. Store the validated vectors as `Arc<[Vec<f32>]>`.
 
 `validate_for_metric` rejects zero-norm stored rows for cosine distance.
 `validate_query` checks dimension, finiteness, and the same cosine boundary
@@ -84,11 +84,9 @@ cargo xtask test day_01::checkpoint_1
 
 ## Checkpoint 2: Build the Introductory MemTable
 
-A vector index belongs to one field of an ordinary table. It does not own a
-special `(id, payload, vector)` row format.
+A vector index belongs to one field of an ordinary table. The rest of the row keeps its normal Arrow types and layout.
 
-The small `VectorRow` and `vector_mem_table` helper remain the first example
-because they make Arrow construction easy to inspect:
+The small `VectorRow` and `vector_mem_table` helper make the first conversion concrete:
 
 ```text
 id         UInt64
@@ -96,12 +94,10 @@ payload    Utf8
 embedding  FixedSizeList<Float32, dimension>
 ```
 
-Implement `vector_mem_table` in
-`vector-db-starter/datafusion/src/lib.rs`.
+Implement `vector_mem_table` in `vector-db-starter/datafusion/src/lib.rs`.
 
-Build a `Dataset` from the `VectorRow` embeddings to validate their shared
-dimension. Create the three Arrow arrays in the same input order, assemble one
-`RecordBatch`, then return an ordinary `MemTable`.
+Build a `Dataset` from the `VectorRow` embeddings so the core validation establishes their shared dimension. Create the
+three Arrow arrays in input order, assemble one `RecordBatch`, and return it through an ordinary `MemTable`.
 
 `FixedSizeListArray` stores vector components in one flat `Float32Array`.
 For two three-dimensional rows, its child values are:
@@ -111,16 +107,14 @@ For two three-dimensional rows, its child values are:
  `---row 0--' `---row 1--'
 ```
 
-Use `i32::try_from(dataset.dimension())` for Arrow's list width.
-
-**Prediction:** What breaks if the payload array is reordered while the
-embedding array keeps insertion order?
+Use `i32::try_from(dataset.dimension())` for Arrow's list width. Keep every array in the same row order: if the payload
+array is reordered while the embeddings stay in insertion order, a query will return payloads that belong to different
+vectors.
 
 ## Checkpoint 3: Attach One Selected Vector Column
 
-The public indexing surface is more general. Register any `MemTable`, then
-construct a `VectorIndexAttachment` with its table reference and selected
-vector-column name:
+The small helper is only an introduction. The indexing surface accepts any registered `MemTable` and binds an index to
+one named vector field. Construct that binding with `VectorIndexAttachment`:
 
 ```rust,ignore
 let attachment = VectorIndexAttachment::try_new(
@@ -135,8 +129,8 @@ let attachment = VectorIndexAttachment::try_new(
 let context = with_vector_indexes(&context, vec![attachment]);
 ```
 
-The supplied SQL session resolves each accepted `CREATE INDEX` target into this same attachment constructor. The bridge is
-already implemented; your Day 1 work is the attachment and execution path it calls.
+The supplied SQL session uses this same constructor for every accepted `CREATE INDEX`. Its DDL bridge is already
+implemented; your Day 1 work begins where that bridge hands off the table and selected field.
 
 The rich Day 1 test table deliberately puts ordinary scalar fields around
 two vector fields:
@@ -151,54 +145,34 @@ image_embedding FixedSizeList<Float32, 3>
 active          Boolean
 ```
 
-Both vector columns have the same type and width, but their nearest-neighbor
-orders differ. A query ordered by `text_embedding` may use the attached index.
-The same query shape over `image_embedding` must remain on DataFusion's exact
-scan and return the image-vector ranking. No field name or ordinal is
-inherently special; only the field selected by the attachment may use its
-index.
+Both vector columns have the same type and width, but their nearest-neighbor orders differ. Attach the index to
+`text_embedding` and that field's query may use it. The same query over `image_embedding` must keep DataFusion's exact
+scan and return the image-vector ranking. Its shape alone is not enough: the attachment's selected field owns the index.
 
-The attachment snapshots the registered `MemTable` batches. It copies only the
-selected vectors into the core `Dataset` and records a checked row location
-for each dataset ordinal:
+The attachment snapshots every batch in the registered `MemTable`. It copies the selected vectors into the core
+`Dataset` and records where each dataset ordinal came from:
 
 ```text
 index dataset ordinal -> snapshot RowId -> checked batch/row -> projected output
 ```
 
-The source Arrow buffers remain shared with the ordinary `MemTable`. Scalar
-columns and the unselected vector column stay normal table data. User columns
-are never row identity.
+The source Arrow buffers remain shared with the `MemTable`; scalar columns and the unselected vector column stay ordinary
+table data. A user column cannot stand in for row identity, so lookup follows the recorded snapshot location instead.
 
-DataFusion has no generic stable point-lookup API for arbitrary
-`TableProvider` implementations. This adapter is therefore intentionally
-limited to registered in-memory `MemTable` instances. A disk or distributed
-provider would need its own stable row locator and lookup implementation.
-
-An attachment must resolve the exact registered `MemTable` instance and the
-configured field. The selected field must exist, be
-`FixedSizeList<Float32>`, have a positive width, and contain no null list or
-null element. Each source row must contribute exactly one dataset vector and
-one checked snapshot row location.
-
-A different positive list width is a valid schema choice; the core dataset takes
-its dimension from the selected field. The SQL matcher later rejects a literal
-whose width differs from that dataset. A zero-width selected field is invalid at
-construction.
+DataFusion has no generic stable point-lookup API for arbitrary `TableProvider` implementations. Day 1 therefore works
+only with registered in-memory `MemTable` instances. A disk or distributed provider would need its own stable row locator
+and lookup implementation.
 
 Implement `VectorIndexAttachment::try_new`.
 
-1. Resolve the table reference and prove the supplied `Arc<MemTable>` is the
-   registered provider.
-2. Snapshot every partition and batch, requiring one shared schema.
-3. Resolve only the configured vector-column name.
-4. Validate its Arrow type, positive width, and non-null values.
-5. Copy those selected vectors into `Dataset` in batch/row order.
-6. Build the requested core index and record the corresponding checked row
-   locations.
+First resolve the table reference and confirm that the supplied `Arc<MemTable>` is the registered provider. Snapshot all
+of its partitions and batches under one shared schema, then resolve the configured field by name. That field must be
+`FixedSizeList<Float32>` with a positive width, no null lists, and no null elements.
 
-The rich-schema tests make the ownership rule observable: text and image vectors
-have identical shapes but different rankings.
+Copy its vectors into `Dataset` in batch and row order. For every dataset ordinal, record the matching checked snapshot
+location, then build the requested core index. The selected field determines the dataset dimension, so any positive list
+width is valid here; the SQL matcher will reject a query literal with a different width. The rich-schema tests make the
+ownership rule visible because the same-shaped text and image fields produce different rankings.
 
 ```sh
 cargo xtask test day_01::checkpoint_3
@@ -209,36 +183,26 @@ cargo xtask test day_01::checkpoint_3
 Implement `match_vector_order` and
 `VectorIndexOptimizer::rewrite_sort`.
 
-The optimizer may replace a scan only for one supported distance expression
-over the configured vector field, a literal query vector, a compatible metric
-and direction, a positive `LIMIT`, and a live source snapshot. Filters,
-multiple sort keys, non-literal vectors, another vector field, wrong metrics or
-directions, and invalid literals remain on DataFusion's exact scan and sort.
+The optimizer may replace a scan only when it recognizes one supported distance expression over the configured vector
+field, a literal query vector, a compatible metric and direction, a positive `LIMIT`, and the live source snapshot.
 
-Unless ordered output is explicitly enabled for the session, DataFusion retains
-the final bounded sort after the index selects candidates. Candidate order is
-not automatically SQL order.
-
-The matcher accepts only:
-
-1. one physical sort expression;
-2. Euclidean `array_distance`/`list_distance`, `cosine_distance`, or dot
-   `inner_product`/`dot_product`;
-3. ascending Euclidean/cosine or descending dot-product order;
-4. one vector `Column` and one literal;
-5. the exact configured vector-column name after projection;
-6. a finite literal with the index dataset's dimension; and
-7. a nonzero cosine literal.
+Match exactly one physical sort expression: ascending Euclidean `array_distance`/`list_distance` or `cosine_distance`, or
+descending dot `inner_product`/`dot_product`. The expression must pair one vector `Column` with one literal. After any
+projection, the column must still be the field selected by the attachment. The literal must be finite, match the index
+dataset's dimension, and be nonzero for cosine distance.
 
 DataFusion widens the fixed-size `Float32` list to `List<Float64>` for its
 distance functions. `match_vector_column` accepts exactly that planner-added
 cast, while `scalar_vector` admits only values that preserve their exact
 `f32` representation.
 
-The optimizer must also prove the physical `MemorySourceConfig` still matches
-the attached table, snapshot, schema, projection, and unambiguous live provider.
-On a match, construct `VectorIndexScanExec`; otherwise leave the plan
-unchanged.
+The optimizer must also prove that the physical `MemorySourceConfig` still matches the attached table, snapshot, schema,
+projection, and unambiguous live provider. Only then may it construct `VectorIndexScanExec`. Filters, multiple sort keys,
+non-literal vectors, another vector field, the wrong metric or direction, and invalid literals all keep DataFusion's exact
+scan and sort.
+
+Unless ordered output is explicitly enabled for the session, retain the final bounded sort after the index selects its
+candidates. The order returned by an index is not automatically SQL order.
 
 ```sh
 cargo xtask test day_01::checkpoint_4
@@ -249,22 +213,21 @@ cargo xtask test day_01::checkpoint_4
 Implement `VectorIndexScanExec::selected_rows` and
 `ExecutionPlan::with_fetch`.
 
-Search the selected index for at most `fetch` rows. Reject an index result that
-does not resolve to the snapshot. The supplied lookup scaffolding reconstructs
-the requested projection in index-result order.
+Search the selected index for at most `fetch` rows. Every result must resolve through its checked location into the
+snapshot; reject one that does not. The supplied lookup scaffolding then reconstructs the requested projection in
+index-result order.
 
-For `ordered=true`, return the scan with its accepted ordering property. For
-the default `ordered=false` path, clear that property and wrap the scan in
-`SortExec::new(ordering, scan).with_fetch(Some(k))`. The index chooses
-candidates; DataFusion still owns SQL's nearest-first result.
+When `ordered=true`, the scan may expose its accepted ordering property. The default `ordered=false` path must clear that
+property and wrap the scan in `SortExec::new(ordering, scan).with_fetch(Some(k))`. The index chooses candidates;
+DataFusion still owns SQL's nearest-first result.
 
 ```sh
 cargo xtask test day_01::checkpoint_5
 ```
 
-The SQLLogicTest starts from an empty session: it creates and inserts the simple `points` table and a rich `documents`
-table, then attaches indexes to the selected columns. `text_embedding` reaches `VectorIndexScanExec`, while
-`image_embedding` stays on `DataSourceExec` and returns its different ranking.
+The SQLLogicTest assembles the same path from an empty session. It creates and fills the simple `points` table and the rich
+`documents` table, then attaches indexes to their selected fields. `text_embedding` reaches `VectorIndexScanExec`;
+`image_embedding` stays on `DataSourceExec` and returns its own ranking.
 
 ## Day 1 Review
 
@@ -275,20 +238,18 @@ cargo xtask test day_01
 cargo xtask test-through day_01
 ```
 
-After the core tests, `sql.rs`, and the Day 1 SQLLogicTest pass, explain:
+At this point, trace one row through the whole system. `vector_mem_table` places the simple helper data in ordinary Arrow
+arrays. An attachment snapshots one selected vector field, maps each index ordinal to a checked batch and row, and uses
+that location to project the complete source row. A same-shaped vector field cannot borrow the attachment because its name
+and ranking belong to a different field.
 
-- how the simple `VectorRow` helper becomes an ordinary `MemTable`;
-- why an attachment owns exactly one configured vector field;
-- how an index dataset ordinal resolves to a projected source row;
-- why the same-shaped image-vector query cannot use the text-vector index;
-- where DataFusion performs exact fallback and final ordering; and
-- why the supplied session rejects changes to an indexed table instead of letting its attachment become stale;
-- how later approximate indexes reuse this boundary without weakening it.
+Then trace the plan boundary. Unsupported query shapes stay on DataFusion's exact scan and sort. A safe match lets the
+index choose candidates, while the default path keeps DataFusion's final ordering. Later approximate indexes reuse this
+boundary, but their candidate set can be incomplete before the final sort. The supplied session protects the snapshot by
+rejecting changes to an indexed table instead of allowing its attachment to become stale.
 
-IVFFlat implementation, filtered pushdown, joins, general DDL/catalog semantics,
-persistence, and disk row lookup remain outside Day 1. The product tour's
-supplied bridge resolves an eligible in-memory table and selected vector column into the attachment path you implemented
-here. It can hold multiple distinct attachments, but it rejects mutation of an indexed table and does not provide
-persistence, automatic rebuilding, online maintenance, or a general catalog lifecycle.
+IVFFlat implementation, filtered pushdown, joins, general DDL/catalog semantics, persistence, and disk row lookup remain
+outside Day 1. The product tour's bridge can hold multiple attachments for eligible in-memory tables and selected fields;
+it does not provide persistence, automatic rebuilding, online maintenance, or a general catalog lifecycle.
 
 {{#include copyright.md}}
