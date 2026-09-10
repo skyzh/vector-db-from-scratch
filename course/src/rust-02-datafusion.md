@@ -111,6 +111,10 @@ Use `i32::try_from(dataset.dimension())` for Arrow's list width. Keep every arra
 array is reordered while the embeddings stay in insertion order, a query will return payloads that belong to different
 vectors.
 
+```sh
+cargo xtask test day_01::checkpoint_2
+```
+
 ## Checkpoint 3: Attach One Selected Vector Column
 
 The small helper is only an introduction. The indexing surface accepts any registered `MemTable` and binds an index to

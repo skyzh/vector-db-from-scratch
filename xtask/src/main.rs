@@ -124,7 +124,7 @@ fn parse_legacy_day(value: &str) -> Result<u8, String> {
 
 fn has_tests(day: u8, checkpoint: u8) -> bool {
     match day {
-        1 => matches!(checkpoint, 1 | 3 | 4 | 5),
+        1 => matches!(checkpoint, 1..=5),
         2 => matches!(checkpoint, 1..=5),
         3 => matches!(checkpoint, 1..=4),
         4 => matches!(checkpoint, 1..=3),
@@ -203,10 +203,10 @@ mod tests {
             }
         );
         assert_eq!(
-            parse_selection("day_02::checkpoint_1").unwrap(),
+            parse_selection("day_01::checkpoint_2").unwrap(),
             Selection {
-                day: 2,
-                checkpoint: Some(1),
+                day: 1,
+                checkpoint: Some(2),
             }
         );
     }
@@ -220,7 +220,6 @@ mod tests {
             "day_07",
             "day_02::checkpoint_0",
             "day_02::checkpoint_6",
-            "day_01::checkpoint_2",
             "day_02::checkpoint_1::extra",
         ] {
             assert!(parse_selection(invalid).is_err(), "accepted {invalid}");

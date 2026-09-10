@@ -9,9 +9,10 @@ use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::arrow::util::pretty::pretty_format_batches;
 use datafusion::common::Result as DataFusionResult;
-use datafusion::datasource::MemTable;
+use datafusion::datasource::{MemTable, TableProvider};
 use datafusion::execution::config::SessionConfig;
 use datafusion::execution::context::SessionContext;
+use datafusion::physical_plan::collect;
 use vector_core::{HnswConfig, IndexConfig, IvfPqConfig, Metric};
 use vector_datafusion_starter::{
     VectorIndexAttachment, VectorRow, vector_mem_table, with_vector_indexes,
@@ -146,6 +147,88 @@ async fn explain(context: &SessionContext, sql: &str) -> String {
 }
 
 mod day_01 {
+    mod checkpoint_2 {
+        use super::super::*;
+
+        #[test]
+        fn vector_mem_table_exposes_the_three_column_schema() {
+            let table = vector_mem_table(vec![
+                VectorRow::new(90, vec![1.0, 2.0, 3.0, 4.0], "first"),
+                VectorRow::new(7, vec![5.0, 6.0, 7.0, 8.0], "second"),
+            ])
+            .unwrap();
+            let schema = table.schema();
+
+            assert_eq!(
+                schema
+                    .fields()
+                    .iter()
+                    .map(|field| field.name().as_str())
+                    .collect::<Vec<_>>(),
+                ["id", "payload", "embedding"]
+            );
+            assert_eq!(schema.field(0).data_type(), &DataType::UInt64);
+            assert_eq!(schema.field(1).data_type(), &DataType::Utf8);
+            let DataType::FixedSizeList(item, dimension) = schema.field(2).data_type() else {
+                panic!("embedding must be a fixed-size list");
+            };
+            assert_eq!(item.data_type(), &DataType::Float32);
+            assert_eq!(*dimension, 4);
+        }
+
+        #[tokio::test]
+        async fn vector_mem_table_preserves_row_order_and_alignment() {
+            let table = vector_mem_table(vec![
+                VectorRow::new(90, vec![0.0, 1.0], "north"),
+                VectorRow::new(7, vec![1.0, 0.0], "east"),
+                VectorRow::new(42, vec![-1.0, 0.5], "west-up"),
+            ])
+            .unwrap();
+            let context = SessionContext::new();
+            let plan = table.scan(&context.state(), None, &[], None).await.unwrap();
+            let batches = collect(plan, context.task_ctx()).await.unwrap();
+            let mut actual = Vec::new();
+
+            for batch in batches {
+                let ids = batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<UInt64Array>()
+                    .unwrap();
+                let payloads = batch
+                    .column(1)
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .unwrap();
+                let embeddings = batch
+                    .column(2)
+                    .as_any()
+                    .downcast_ref::<FixedSizeListArray>()
+                    .unwrap();
+
+                for row in 0..batch.num_rows() {
+                    let embedding = embeddings.value(row);
+                    let embedding = embedding.as_any().downcast_ref::<Float32Array>().unwrap();
+                    actual.push((
+                        ids.value(row),
+                        payloads.value(row).to_owned(),
+                        embedding.values().to_vec(),
+                    ));
+                }
+            }
+
+            assert_eq!(actual.len(), 3);
+            assert_eq!(
+                actual,
+                [
+                    (90, "north".to_owned(), vec![0.0, 1.0]),
+                    (7, "east".to_owned(), vec![1.0, 0.0]),
+                    (42, "west-up".to_owned(), vec![-1.0, 0.5]),
+                ]
+            );
+        }
+    }
+
     mod checkpoint_3 {
         use super::super::*;
 
