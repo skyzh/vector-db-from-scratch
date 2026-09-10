@@ -15,7 +15,7 @@ visible before you write any Rust.
 The six implementation days then rebuild that path from the bottom up. Day 1 connects ordinary Arrow rows to
 DataFusion and adds the optimizer rule that can select a vector index safely. Days 2–5 implement IVFFlat, NSW, HNSW,
 and IVF-PQ behind the same query interface. Day 6 compares those four indexes with the exact flat baseline on SIFT1M.
-The benchmark keeps Euclidean distance, `k = 100`, first-neighbor rank recall, and latency fixed across all five indexes.
+The benchmark keeps Euclidean distance and `k = 100` fixed, and uses the same first-neighbor rank-recall definition and latency measurement procedure for all five indexes.
 
 ```sql
 SELECT id, payload
