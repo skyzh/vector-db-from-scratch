@@ -31,7 +31,7 @@ SQL
 ```
 
 Before you run it, predict which rows the exact scan should rank nearest. Afterward, compare that answer with the indexed
-result and keep the approximate-search boundary in mind: the neighbors or their order may differ.
+result and identify which differences this tiny exhaustive tour can actually produce.
 
 ## Watch the Scan Change
 
@@ -67,10 +67,11 @@ When the second `SELECT` executes this plan, the shell confirms the choice on st
 Vector index selected: index=ivf_flat, metric=Cosine, query_dim=3, fetch=3, ordered=false
 ```
 
-In this run, the indexed query returns rows 1, 2, and 3 in the same order as the exact scan. Treat that as one observation,
-not an IVFFlat guarantee. The index retrieves an approximate candidate set, so membership and ordering may change.
-DataFusion then applies the final sort to the candidates it received, using the same cosine distance and `LIMIT 3` from
-the SQL.
+In this run, the indexed query returns rows 1, 2, and 3 in the same order as the exact scan. The tiny tour builds two
+IVFFlat partitions and probes both, so it computes cosine distance for all five rows. Only the exact tie between rows 3
+and 5 can change the third slot here. IVFFlat is generally approximate when it probes only a subset of its partitions;
+in those configurations, candidate membership and ordering may change. DataFusion applies the final sort to the
+candidates it receives, using the same cosine distance and `LIMIT 3` from the SQL.
 
 ## What `CREATE INDEX` Does Here
 
