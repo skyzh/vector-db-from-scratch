@@ -8,14 +8,14 @@ or run it.
 
 </div>
 
-Start with a supplied product tour: launch an empty SQL session, create and populate an in-memory `points` table, attach an
-IVFFlat index to its selected vector column, and watch `EXPLAIN` change without changing the nearest rows. Across the six
-implementation days that follow, you will connect that table to DataFusion, implement the optimizer rule that selects
-a safe vector-index scan, build
-IVFFlat behind that rule, navigate a proximity graph with NSW, add HNSW hierarchy, compress residual candidate scoring
-with IVF-PQ, and compare all five indexes on SIFT1M. The first five days return to runnable SQL so you can inspect how
-the same product path changes as the index becomes more capable. The final day measures first-neighbor rank recall
-and latency directly under one shared Euclidean, `k = 100` contract.
+Begin with the supplied product tour. You will open an empty SQL session, create an in-memory `points` table, run a
+nearest-neighbor query, and attach an IVFFlat index to the table's vector column. `EXPLAIN` makes the change in scan
+visible before you write any Rust.
+
+The six implementation days then rebuild that path from the bottom up. Day 1 connects ordinary Arrow rows to
+DataFusion and adds the optimizer rule that can select a vector index safely. Days 2–5 implement IVFFlat, NSW, HNSW,
+and IVF-PQ behind the same query interface. Day 6 compares those four indexes with the exact flat baseline on SIFT1M.
+The benchmark keeps Euclidean distance, `k = 100`, first-neighbor rank recall, and latency fixed across all five indexes.
 
 ```sql
 SELECT id, payload
@@ -24,11 +24,15 @@ ORDER BY cosine_distance(embedding, [0.1, 0.2, 0.3])
 LIMIT 10;
 ```
 
-The [product tour](./rust-00-sql-shell.md) creates and fills the table, then runs a concrete query of this shape through the
-supplied completed system before you edit anything. DataFusion's vector distance expression, bounded sort, and `LIMIT`
-return an exact result; after you create a named index on the selected vector column, that unchanged SQL reaches the
-course's vector-index scan. Day 1 then asks you to build the safe table, attachment, and planner path behind that
-observation. Later, you will add IVFFlat as your own candidate selector behind the same interface.
+The [product tour](./rust-00-sql-shell.md) runs this shape of query through the supplied completed system. Before an index
+is attached, DataFusion scans every row, so the fallback result is exact. The tour then creates an IVFFlat index with two
+partitions and probes both of them. That particular indexed run still scores all five rows, although rows 3 and 5 tie for
+the third slot and SQL has no secondary ordering key to break the tie. IVFFlat becomes approximate when it probes only a
+subset of its partitions. In that case, DataFusion's final sort orders the candidates returned by the index; it cannot
+recover rows that never entered the candidate set.
+
+Day 1 asks you to build the table conversion, attachment, and planner path behind this observation. The later days
+replace the selected index while keeping the SQL interface and safety rule intact.
 
 ## Where to Write Your Code
 
@@ -43,9 +47,9 @@ vector-db/
   datafusion/                completed DataFusion reference
 ```
 
-The product tour executes one supplied example from `vector-db/`; you do not need to inspect or modify that implementation.
-After the tour, work in `vector-db-starter/` and implement its TODOs in day order. Keep the completed reference source
-closed while you work through the exercises, as required by the starter's `AGENTS.md` files.
+The product tour executes a supplied example from `vector-db/`. Leave that completed implementation closed and
+unchanged. Your work begins in `vector-db-starter/`, where the TODOs are arranged in day order. The `AGENTS.md` files in
+the two starter crates state the same boundary.
 
 From the repository root, check that the untouched starter compiles:
 
@@ -54,9 +58,9 @@ cargo check -p vector-db-from-scratch-core-starter
 cargo check -p vector-db-from-scratch-datafusion-starter
 ```
 
-The focused tests initially stop at `todo!` calls. Each day names the exact tests that should pass before you move on,
-then closes with `cargo xtask test day_NN` for that day's work and
-`cargo xtask test-through day_NN` for the cumulative course.
+The focused tests initially stop at `todo!` calls. Each day places its checkpoint command next to the code it exercises.
+At the end of a day, run `cargo xtask test day_NN` for that day's work and `cargo xtask test-through day_NN` for the
+cumulative course.
 
 ## One Query, Two Plans
 
@@ -68,7 +72,7 @@ SortExec: TopK(fetch=10), ...
 ```
 
 An ordinary `MemTable` emits Arrow rows. DataFusion evaluates the distance function for every row and uses its own
-bounded sort to produce the nearest ten.
+bounded sort to produce the nearest ten. This is the exact fallback path.
 
 On Day 1, you attach one index to an explicitly selected vector column, then implement a physical optimizer rule. It
 accepts only one compatible distance ordering over that configured field with a literal query vector. The matched scan
@@ -79,7 +83,7 @@ SortExec: TopK(fetch=10), ...
   VectorIndexScanExec: index=flat, metric=Cosine, query_dim=3, fetch=Some(10), ordered=false
 ```
 
-The starter's exact `FlatIndex` lets you exercise this rule on Day 1. Later days change only the selected index:
+The starter's exact `FlatIndex` lets you exercise this rule on Day 1. Later days change the selected index:
 
 ```text
 SortExec: TopK(fetch=10), ...
@@ -96,13 +100,13 @@ SortExec: TopK(fetch=10), ...
   VectorIndexScanExec: index=hnsw, metric=Cosine, query_dim=3, fetch=Some(10), ordered=false
 ```
 
-The default plan retains DataFusion's bounded sort. The index selects candidates; `SortExec` owns SQL ordering. When the
-selected index returns rows in the requested order, `SET vector_search.ordered = true` tells DataFusion it can skip this
-final sort.
+The default plan retains DataFusion's bounded sort. The index chooses the candidate rows, and `SortExec` orders those
+candidates for SQL. When an index guarantees that its output is already in the requested order,
+`SET vector_search.ordered = true` lets DataFusion skip the final sort.
 
-Filters, multiple sort keys, a non-literal query vector, another same-shaped vector column, the wrong distance function,
-the wrong direction, or a dimension mismatch keep the exact plan. In particular, taking ANN top-k before applying a
-filter can change the answer, so refusing that rewrite is a correctness requirement.
+The optimizer keeps the exact plan for filters, multiple sort keys, a non-literal query vector, another same-shaped
+vector column, the wrong distance function or direction, and dimension mismatches. This conservative behavior matters:
+for example, taking ANN top-k before applying a filter can change the answer.
 
 ## Architecture
 
@@ -115,16 +119,15 @@ ordinary MemTable --> selected-column attachment --> DataFusion optimizer --> Ve
                                                                             `-- your HnswIndex
 ```
 
-The DataFusion crate owns Arrow conversion, SQL-pattern matching, plan properties, limits, and output batches. The core
-crate owns dimensions, metrics, exact-search results, candidate selection, and deterministic result order. Later index
-implementations will not import DataFusion.
+The DataFusion crate owns Arrow conversion and the SQL-facing execution path: pattern matching, plan properties, limits,
+and output batches. The core crate owns vector dimensions, metrics, search results, candidate selection, and
+deterministic result order. The later index implementations do not need to import DataFusion.
 
-This separation gives Days 1–5 two useful views of each checkpoint: small Rust tests isolate the algorithm, while
-self-contained SQLLogicTests show that the Day 1 optimizer can reach it. Day 5 also keeps a focused
-planner/EXPLAIN test for IVF-PQ; Day 6 brings every index into one fixed full-SIFT1M comparison and an explicitly
-non-parity smoke mode.
+This split gives you two ways to check Days 1–5. Small Rust tests isolate the algorithm, while self-contained
+SQLLogicTests show that the Day 1 optimizer can reach it. Day 5 adds a focused planner/`EXPLAIN` test for IVF-PQ. Day 6
+moves all five indexes into one full-SIFT1M comparison; its smaller smoke mode is explicitly not a parity run.
 
-## System Contract
+## Rules That Stay Fixed
 
 1. **Dimension:** a dataset has one nonzero dimension; every stored vector and query matches it.
 2. **Numeric domain:** stored values are finite `f32`, while metric accumulation uses `f64`. Cosine inputs have nonzero
@@ -149,35 +152,30 @@ non-parity smoke mode.
 | [5 — IVF-PQ](./rust-07-ivfpq.md) | 3–4 hours | HNSW completes the course's full-precision index set. | Residual PQ codes provide lookup-table candidate scoring, exact reranking, and explicit search-representation accounting. | `vector-db-starter/core/src/pq.rs` |
 | [6 — Five-index SIFT1M benchmark](./rust-06-benchmark.md) | 1–2 hours plus the external run | Each index has been exercised separately. | Flat, IVFFlat, NSW, HNSW, and IVF-PQ share one full-SIFT1M Euclidean, `k = 100`, first-neighbor rank-recall, and latency contract. | `vector-db-starter/core/examples/recall.rs` |
 
-Day 1 gives you an exact end-to-end query whose rows and physical plan you can inspect. Days 2–5 keep that SQL
-interface and safety rule in place while changing how candidate rows are selected. Day 6 then compares all five
-indexes without changing the SIFT1M data, queries, Euclidean metric, or `k = 100`; its smaller mode is labeled non-parity
-because it recomputes truth over a 10,000-row subset.
+Day 1 establishes the end-to-end path: a Rust row becomes a core offset and an Arrow row, the optimizer recognizes a
+safe physical expression, and incompatible or filtered queries stay on the exact scan. This rule has to work before an
+approximate index can be reached from SQL.
 
-After Day 6, you should be able to explain:
+The next four days change how candidates are found. IVFFlat trains centroids, rebuilds list membership after the final
+centroid update, and exposes `probes` as its recall/work control. NSW uses separate candidate and result frontiers while
+reciprocal pruning keeps the graph bounded. HNSW adds seeded, reproducible promotion, greedy upper-layer routing, and a
+layer-zero beam. IVF-PQ keeps coarse centroids, residual codebooks, approximate lookup-table scoring, and exact
+reranking as distinct parts of the search.
 
-- how row identity survives conversion from Rust structs to core offsets and Arrow arrays;
-- which physical expression shapes are safe to lower to a vector index;
-- why DataFusion retains exact fallback for filtered or incompatible top-k queries;
-- why the optimizer rule must exist before an approximate index can be exercised from SQL;
-- why IVFFlat must rebuild list membership after its final centroid update; and
-- how `probes` trades candidate work for recall without changing SQL;
-- why NSW needs separate candidate and result frontiers;
-- how reciprocal pruning preserves a bounded graph;
-- why HNSW uses greedy upper layers and a layer-zero beam;
-- how seeded promotion makes comparisons reproducible;
-- why IVF-PQ separates coarse centroids, residual codebooks, approximate scoring, and exact reranking; and
-- how supplied or recomputed exact first-neighbor truth, cyclic warm-up and timing order, and one shared workload make
-  rank recall and latency interpretable together.
+The final benchmark holds the workload still while those choices change. Exact first-neighbor truth is supplied or
+recomputed from the same data and queries, and every index uses the same Euclidean metric and `k = 100`. Cyclic warm-up
+and timing order make the resulting rank-recall and latency numbers comparable.
 
 ## Scope
 
-These six days use an immutable in-memory collection and a readable Euclidean residual IVF-PQ implementation, but not
-bit packing or optimized kernels. Online updates or deletes, index persistence, crash recovery, concurrent mutation,
-filtered ANN, GPU kernels, distributed execution, general catalog semantics, and a network service remain outside this
-implementation. The supplied shell's bounded `CREATE INDEX` bridge resolves eligible named or qualified in-memory tables,
-supports multiple distinct attachments, and rejects writes that would stale an indexed snapshot; it is not a persistence,
-online-maintenance, or general catalog subsystem. The final day also assumes a locally acquired SIFT1M directory;
-the repository supplies parsers and tiny corruption fixtures, not the external corpus or benchmark results.
+The course uses an immutable in-memory collection and a readable Euclidean residual IVF-PQ implementation. It does not
+add bit packing or optimized kernels. Online updates and deletes, index persistence, crash recovery, concurrent
+mutation, filtered ANN, GPU kernels, distributed execution, a general catalog, and a network service are outside the
+implementation.
+
+The supplied shell includes a narrow `CREATE INDEX` bridge for eligible named or qualified in-memory tables. It supports
+multiple distinct attachments and rejects writes that would stale an indexed snapshot, but it is not a persistence or
+online-maintenance subsystem. Day 6 assumes that you have acquired SIFT1M locally. The repository provides parsers and
+small corruption fixtures, not the external corpus or benchmark results.
 
 {{#include copyright.md}}
