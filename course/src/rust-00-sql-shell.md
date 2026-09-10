@@ -42,13 +42,16 @@ SortExec: TopK(fetch=3), ...
   DataSourceExec: partitions=1, ...
 ```
 
-The exact query returns:
+In this run, the exact query returns:
 
 ```text
 1  one
 2  two
 3  three
 ```
+
+Rows 1 and 2 are uniquely nearest. Rows 3 and 5 have the same cosine distance and tie for the third slot, so without a
+secondary `ORDER BY` key SQL does not require DataFusion to choose between them deterministically.
 
 The next command attaches an index. Although the following `SELECT` is byte-for-byte identical, its physical plan now
 reaches the course-owned scan:
