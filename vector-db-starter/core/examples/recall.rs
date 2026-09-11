@@ -1,10 +1,11 @@
 use std::collections::HashSet;
 use std::error::Error;
+use std::io::IsTerminal;
 use std::time::{Duration, Instant};
 
 use vector_benchmark_support::{
-    Cli, Mode, RankRecall, TimedRun, Truth, load_sift1m, parse_cli, percentile, rank_recall,
-    run_balanced,
+    Cli, FirstHit, Mode, Progress, TimedRun, Truth, first_hit, load_sift1m_with_progress,
+    overlap_at_100, parse_cli, percentile, run_balanced_with_progress,
 };
 use vector_core_starter::{
     Dataset, FlatIndex, HnswConfig, HnswIndex, IvfFlatConfig, IvfFlatIndex, IvfPqConfig,
@@ -18,7 +19,7 @@ const INDEX_NAMES: [&str; INDEX_COUNT] = ["flat", "ivf_flat", "nsw", "hnsw", "iv
 const INDEX_CONFIGS: [&str; INDEX_COUNT] = [
     "exact",
     "partitions=32,probes=6,iterations=12,seed=7",
-    "max_connections=12,ef_construction=64,ef_search=40",
+    "max_connections=12,ef_construction=64,ef_search_configured=40,ef_search_effective=100",
     "max_connections=12,ef_construction=64,ef_search=40,max_level=12,seed=7",
     "partitions=32,probes=6,iterations=12,subquantizers=4,codebook_size=16,rerank=100,seed=7",
 ];
@@ -28,7 +29,7 @@ struct Workload {
     truth: Truth,
     dataset: Dataset,
     queries: Vec<Vec<f32>>,
-    exact_first: Vec<usize>,
+    exact_top_100: Vec<Vec<usize>>,
 }
 
 struct BuiltIndex {
@@ -41,7 +42,11 @@ struct BuiltIndex {
 #[derive(Debug, Clone, Copy)]
 struct Measurement {
     search_time: Duration,
-    recall: RankRecall,
+    first_hit: FirstHit,
+    overlap_at_100: f64,
+    returned_min: usize,
+    returned_avg: f64,
+    returned_max: usize,
     p50: Duration,
     p99: Duration,
 }
@@ -89,50 +94,68 @@ fn main() {
 }
 
 fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
-    let sift = load_sift1m(&cli)?;
+    let stderr = std::io::stderr();
+    let terminal = stderr.is_terminal();
+    let mut progress = Progress::new(stderr, terminal);
+    let sift = load_sift1m_with_progress(&cli, &mut progress)?;
     let mode = sift.mode;
-    let supplied_first = sift
-        .supplied_ground_truth
-        .iter()
-        .map(|row| row[0])
-        .collect::<Vec<_>>();
+    let supplied_top_100 = sift.supplied_ground_truth;
     let dataset = Dataset::try_new(sift.base)?;
     let queries = sift.queries;
 
     let dataset_for_flat = dataset.clone();
+    progress.event("build flat", "start");
     let started = Instant::now();
     let flat = FlatIndex::try_new(dataset_for_flat, Metric::Euclidean)?;
     let flat_build = started.elapsed();
-    let (truth, exact_first) = select_exact_truth(mode, supplied_first, || {
-        queries
-            .iter()
-            .map(|query| flat.search(query, K).map(|rows| rows[0].row))
-            .collect::<vector_core_starter::Result<Vec<_>>>()
+    progress.event("build flat", "complete");
+    let (truth, exact_top_100) = select_exact_truth(mode, supplied_top_100, || {
+        progress.begin("recompute smoke truth", "queries", queries.len(), None);
+        let mut exact = Vec::with_capacity(queries.len());
+        for (ordinal, query) in queries.iter().enumerate() {
+            exact.push(
+                flat.search(query, K)?
+                    .into_iter()
+                    .map(|neighbor| neighbor.row)
+                    .collect(),
+            );
+            progress.advance(ordinal + 1);
+        }
+        progress.finish();
+        Ok::<_, vector_core_starter::VectorError>(exact)
     })?;
 
     let dataset_for_ivf_flat = dataset.clone();
     let ivf_flat_config = ivf_flat_config();
+    progress.event("build ivf_flat", "start");
     let started = Instant::now();
     let ivf_flat = IvfFlatIndex::try_new(dataset_for_ivf_flat, Metric::Euclidean, ivf_flat_config)?;
     let ivf_flat_build = started.elapsed();
+    progress.event("build ivf_flat", "complete");
 
     let dataset_for_nsw = dataset.clone();
     let nsw_config = nsw_config();
+    progress.event("build nsw", "start");
     let started = Instant::now();
     let nsw = build_nsw(dataset_for_nsw, Metric::Euclidean, nsw_config)?;
     let nsw_build = started.elapsed();
+    progress.event("build nsw", "complete");
 
     let dataset_for_hnsw = dataset.clone();
     let hnsw_config = hnsw_config();
+    progress.event("build hnsw", "start");
     let started = Instant::now();
     let hnsw = build_hnsw(dataset_for_hnsw, Metric::Euclidean, hnsw_config)?;
     let hnsw_build = started.elapsed();
+    progress.event("build hnsw", "complete");
 
     let dataset_for_ivf_pq = dataset.clone();
     let ivf_pq_config = ivf_pq_config();
+    progress.event("build ivf_pq", "start");
     let started = Instant::now();
     let ivf_pq = build_ivf_pq(dataset_for_ivf_pq, Metric::Euclidean, ivf_pq_config)?;
     let ivf_pq_build = started.elapsed();
+    progress.event("build ivf_pq", "complete");
     let accounting = PqAccounting::from_index(&ivf_pq);
 
     let indexes = vec![
@@ -167,10 +190,11 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
             build_time: ivf_pq_build,
         },
     ];
-    let runs = run_balanced(
+    let runs = run_balanced_with_progress(
         &queries,
         INDEX_COUNT,
         WARM_QUERY_COUNT.min(queries.len()),
+        &mut progress,
         |index, query| indexes[index].index.search(query, K),
     )?;
     let workload = Workload {
@@ -178,7 +202,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
         truth,
         dataset,
         queries,
-        exact_first,
+        exact_top_100,
     };
     for line in format_report(&workload, &indexes, &runs, accounting)? {
         println!("{line}");
@@ -188,11 +212,11 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
 
 fn select_exact_truth<E>(
     mode: Mode,
-    supplied_first: Vec<usize>,
-    recompute: impl FnOnce() -> Result<Vec<usize>, E>,
-) -> Result<(Truth, Vec<usize>), E> {
+    supplied_top_100: Vec<Vec<usize>>,
+    recompute: impl FnOnce() -> Result<Vec<Vec<usize>>, E>,
+) -> Result<(Truth, Vec<Vec<usize>>), E> {
     match mode {
-        Mode::Full => Ok((Truth::SuppliedSift1m, supplied_first)),
+        Mode::Full => Ok((Truth::SuppliedSift1m, supplied_top_100)),
         Mode::Smoke => Ok((Truth::RecomputedFlatSelectedBase, recompute()?)),
     }
 }
@@ -262,46 +286,75 @@ fn build_ivf_pq(
 
 fn summarize(
     run: &TimedRun<Vec<Neighbor>>,
-    exact_first: &[usize],
+    exact_top_100: &[Vec<usize>],
     base_rows: usize,
 ) -> Result<Measurement, Box<dyn Error>> {
-    if run.results.len() != exact_first.len() || run.latencies.len() != exact_first.len() {
-        return Err("search result count does not match query count".into());
-    }
-    let mut total = RankRecall {
+    validate_run(run, exact_top_100, base_rows)?;
+    let mut total = FirstHit {
         r1: 0.0,
         r10: 0.0,
         r100: 0.0,
     };
-    for (neighbors, exact) in run.results.iter().zip(exact_first) {
-        validate_neighbors(neighbors, base_rows, K)?;
+    let mut total_overlap = 0.0;
+    let mut returned_min = usize::MAX;
+    let mut returned_total = 0;
+    let mut returned_max = 0;
+    for (neighbors, exact) in run.results.iter().zip(exact_top_100) {
         let rows = neighbors
             .iter()
             .map(|neighbor| neighbor.row)
             .collect::<Vec<_>>();
-        let recall = rank_recall(&rows, *exact);
-        total.r1 += recall.r1;
-        total.r10 += recall.r10;
-        total.r100 += recall.r100;
+        let hit = first_hit(&rows, exact[0]);
+        total.r1 += hit.r1;
+        total.r10 += hit.r10;
+        total.r100 += hit.r100;
+        total_overlap += overlap_at_100(&rows, exact);
+        returned_min = returned_min.min(rows.len());
+        returned_total += rows.len();
+        returned_max = returned_max.max(rows.len());
     }
-    let queries = exact_first.len() as f64;
-    let recall = RankRecall {
+    let queries = exact_top_100.len() as f64;
+    let first_hit = FirstHit {
         r1: total.r1 / queries,
         r10: total.r10 / queries,
         r100: total.r100 / queries,
     };
-    if !(0.0..=recall.r10).contains(&recall.r1) || !(recall.r10..=1.0).contains(&recall.r100) {
-        return Err("rank recall is not finite and monotonic".into());
+    if !(0.0..=first_hit.r10).contains(&first_hit.r1)
+        || !(first_hit.r10..=1.0).contains(&first_hit.r100)
+    {
+        return Err("first-neighbor hit rate is not finite and monotonic".into());
     }
     let mut latencies = run.latencies.clone();
     latencies.sort_unstable();
     let (p50, p99) = report_percentiles(&latencies);
     Ok(Measurement {
         search_time: run.latencies.iter().sum(),
-        recall,
+        first_hit,
+        overlap_at_100: total_overlap / queries,
+        returned_min,
+        returned_avg: returned_total as f64 / queries,
+        returned_max,
         p50,
         p99,
     })
+}
+
+fn validate_run(
+    run: &TimedRun<Vec<Neighbor>>,
+    exact_top_100: &[Vec<usize>],
+    base_rows: usize,
+) -> Result<(), Box<dyn Error>> {
+    if exact_top_100.is_empty()
+        || run.results.len() != exact_top_100.len()
+        || run.latencies.len() != exact_top_100.len()
+        || exact_top_100.iter().any(|truth| truth.len() != K)
+    {
+        return Err("search result count does not match query count".into());
+    }
+    for neighbors in &run.results {
+        validate_neighbors(neighbors, base_rows, K)?;
+    }
+    Ok(())
 }
 
 fn report_percentiles(_sorted: &[Duration]) -> (Duration, Duration) {
@@ -314,8 +367,8 @@ fn validate_neighbors(
     base_rows: usize,
     k: usize,
 ) -> Result<(), Box<dyn Error>> {
-    if neighbors.len() != k.min(base_rows) {
-        return Err("search returned the wrong result count".into());
+    if neighbors.len() > k.min(base_rows) {
+        return Err("search returned more than k results".into());
     }
     if neighbors
         .iter()
@@ -345,6 +398,9 @@ fn format_report(
     if indexes.len() != INDEX_COUNT || runs.len() != INDEX_COUNT {
         return Err("benchmark index inventory is incomplete".into());
     }
+    for run in runs {
+        validate_run(run, &workload.exact_top_100, workload.dataset.len())?;
+    }
     let mut lines = vec![format!(
         "workload: mode={}, parity={}, rows={}, dimensions={}, queries={}, metric=euclidean, k={K}, truth={}",
         workload.mode.mode_label(),
@@ -362,14 +418,17 @@ fn format_report(
         {
             return Err("benchmark index inventory drifted".into());
         }
-        let measurement = summarize(run, &workload.exact_first, workload.dataset.len())?;
+        let measurement = summarize(run, &workload.exact_top_100, workload.dataset.len())?;
         if ordinal == 0
-            && measurement.recall
-                != (RankRecall {
+            && (measurement.first_hit
+                != (FirstHit {
                     r1: 1.0,
                     r10: 1.0,
                     r100: 1.0,
                 })
+                || measurement.overlap_at_100 != 1.0
+                || measurement.returned_min != K
+                || measurement.returned_max != K)
         {
             return Err("Flat disagrees with the selected exact truth".into());
         }
@@ -393,15 +452,19 @@ fn format_row(index: &BuiltIndex, query_count: usize, measurement: Measurement) 
     let search_seconds = measurement.search_time.as_secs_f64();
     let qps = query_count as f64 / search_seconds;
     format!(
-        "{}: config={}, build_s={:.3}, search_s={:.3}, qps={:.1}, r@1={:.4}, r@10={:.4}, r@100={:.4}, p50_ms={:.3}, p99_ms={:.3}",
+        "{}: config={}, build_s={:.3}, search_s={:.3}, qps={:.1}, first_hit@1={:.4}, first_hit@10={:.4}, first_hit@100={:.4}, overlap@100={:.4}, returned_min={}, returned_avg={:.1}, returned_max={}, p50_ms={:.3}, p99_ms={:.3}",
         index.name,
         index.config,
         index.build_time.as_secs_f64(),
         search_seconds,
         qps,
-        measurement.recall.r1,
-        measurement.recall.r10,
-        measurement.recall.r100,
+        measurement.first_hit.r1,
+        measurement.first_hit.r10,
+        measurement.first_hit.r100,
+        measurement.overlap_at_100,
+        measurement.returned_min,
+        measurement.returned_avg,
+        measurement.returned_max,
         measurement.p50.as_secs_f64() * 1_000.0,
         measurement.p99.as_secs_f64() * 1_000.0,
     )
@@ -428,6 +491,7 @@ mod day_06 {
             assert_eq!(INDEX_NAMES, ["flat", "ivf_flat", "nsw", "hnsw", "ivf_pq"]);
             assert_eq!(ivf_flat_config().seed, 7);
             assert_eq!(nsw_config().ef_search, 40);
+            assert!(INDEX_CONFIGS[2].contains("ef_search_configured=40,ef_search_effective=100"));
             assert_eq!((hnsw_config().max_level, hnsw_config().seed), (12, 7));
             let pq = ivf_pq_config();
             assert_eq!(
@@ -523,22 +587,25 @@ mod day_06 {
 
         #[test]
         fn smoke_truth_is_recomputed_on_the_selected_base() {
-            let (truth, exact) =
-                select_exact_truth(Mode::Smoke, vec![99], || Ok::<_, &'static str>(vec![7]))
-                    .unwrap();
+            let supplied = vec![(0..100).collect::<Vec<_>>()];
+            let recomputed = vec![(100..200).collect::<Vec<_>>()];
+            let (truth, exact) = select_exact_truth(Mode::Smoke, supplied.clone(), || {
+                Ok::<_, &'static str>(recomputed.clone())
+            })
+            .unwrap();
             assert_eq!(truth, Truth::RecomputedFlatSelectedBase);
-            assert_eq!(exact, [7]);
+            assert_eq!(exact, recomputed);
 
-            let (truth, exact) = select_exact_truth(Mode::Full, vec![99], || {
-                Err::<Vec<usize>, _>("full mode must not recompute")
+            let (truth, exact) = select_exact_truth(Mode::Full, supplied.clone(), || {
+                Err::<Vec<Vec<usize>>, _>("full mode must not recompute")
             })
             .unwrap();
             assert_eq!(truth, Truth::SuppliedSift1m);
-            assert_eq!(exact, [99]);
+            assert_eq!(exact, supplied);
         }
 
         #[test]
-        fn result_validation_requires_complete_unique_public_order() {
+        fn result_validation_accepts_short_results_but_preserves_structural_errors() {
             let valid = (0..100)
                 .map(|row| Neighbor {
                     row,
@@ -546,11 +613,66 @@ mod day_06 {
                 })
                 .collect::<Vec<_>>();
             assert!(validate_neighbors(&valid, 10_000, 100).is_ok());
-            assert!(validate_neighbors(&valid[..99], 10_000, 100).is_err());
+            assert!(validate_neighbors(&valid[..50], 10_000, 100).is_ok());
+            assert!(validate_neighbors(&[], 10_000, 100).is_ok());
+            let mut over_k = valid.clone();
+            over_k.push(Neighbor {
+                row: 100,
+                distance: 100.0,
+            });
+            assert!(validate_neighbors(&over_k, 10_000, 100).is_err());
+            let mut duplicate = valid.clone();
+            duplicate[99].row = 98;
+            duplicate[99].distance = 98.0;
+            assert!(validate_neighbors(&duplicate, 10_000, 100).is_err());
+            let unordered = [
+                Neighbor {
+                    row: 1,
+                    distance: 1.0,
+                },
+                Neighbor {
+                    row: 0,
+                    distance: 0.0,
+                },
+            ];
+            assert!(validate_neighbors(&unordered, 10_000, 100).is_err());
+            let unordered_tie = [
+                Neighbor {
+                    row: 1,
+                    distance: 0.0,
+                },
+                Neighbor {
+                    row: 0,
+                    distance: 0.0,
+                },
+            ];
+            assert!(validate_neighbors(&unordered_tie, 10_000, 100).is_err());
+            assert!(
+                validate_neighbors(
+                    &[Neighbor {
+                        row: 10_000,
+                        distance: 0.0
+                    }],
+                    10_000,
+                    100
+                )
+                .is_err()
+            );
+            assert!(
+                validate_neighbors(
+                    &[Neighbor {
+                        row: 0,
+                        distance: f32::NAN
+                    }],
+                    10_000,
+                    100
+                )
+                .is_err()
+            );
         }
 
         #[test]
-        fn summary_uses_rank_prefixes_and_validates_query_shape() {
+        fn summary_reports_first_hit_overlap_and_returned_counts() {
             let neighbors = (0..100)
                 .map(|row| Neighbor {
                     row,
@@ -561,19 +683,228 @@ mod day_06 {
                 latencies: vec![Duration::from_millis(1), Duration::from_millis(2)],
                 results: vec![neighbors.clone(), neighbors],
             };
-            let measurement = summarize(&run, &[0, 5], 10_000).unwrap();
+            let mut second_truth = (0..100).collect::<Vec<_>>();
+            second_truth.swap(0, 5);
+            let truth = vec![(0..100).collect::<Vec<_>>(), second_truth];
+            let measurement = summarize(&run, &truth, 10_000).unwrap();
             assert_eq!(measurement.search_time, Duration::from_millis(3));
             assert_eq!(
-                measurement.recall,
-                RankRecall {
+                measurement.first_hit,
+                FirstHit {
                     r1: 0.5,
                     r10: 1.0,
                     r100: 1.0,
                 }
             );
+            assert_eq!(measurement.overlap_at_100, 1.0);
+            assert_eq!(
+                (
+                    measurement.returned_min,
+                    measurement.returned_avg,
+                    measurement.returned_max
+                ),
+                (100, 100.0, 100)
+            );
             assert_eq!(measurement.p50, Duration::from_millis(1));
             assert_eq!(measurement.p99, Duration::from_millis(2));
-            assert!(summarize(&run, &[0], 10_000).is_err());
+            assert!(summarize(&run, &truth[..1], 10_000).is_err());
+        }
+
+        #[test]
+        fn one_exact_first_and_fifty_true_rows_use_the_fixed_truth_denominator() {
+            let truth = vec![(0..100).collect::<Vec<_>>()];
+            let one_overlap = std::iter::once(0)
+                .chain(100..199)
+                .map(|row| Neighbor {
+                    row,
+                    distance: row as f32,
+                })
+                .collect::<Vec<_>>();
+            let measurement = summarize(
+                &TimedRun {
+                    latencies: vec![Duration::from_millis(1)],
+                    results: vec![one_overlap],
+                },
+                &truth,
+                10_000,
+            )
+            .unwrap();
+            assert_eq!(
+                measurement.first_hit,
+                FirstHit {
+                    r1: 1.0,
+                    r10: 1.0,
+                    r100: 1.0
+                }
+            );
+            assert_eq!(measurement.overlap_at_100, 0.01);
+
+            let fifty = (0..50)
+                .map(|row| Neighbor {
+                    row,
+                    distance: row as f32,
+                })
+                .collect::<Vec<_>>();
+            let measurement = summarize(
+                &TimedRun {
+                    latencies: vec![Duration::from_millis(1)],
+                    results: vec![fifty],
+                },
+                &truth,
+                10_000,
+            )
+            .unwrap();
+            assert_eq!(measurement.overlap_at_100, 0.5);
+            assert_eq!(
+                (
+                    measurement.returned_min,
+                    measurement.returned_avg,
+                    measurement.returned_max
+                ),
+                (50, 50.0, 50)
+            );
+        }
+
+        #[derive(Debug)]
+        struct ReportIndex {
+            name: &'static str,
+            dataset: Dataset,
+        }
+
+        impl VectorIndex for ReportIndex {
+            fn kind(&self) -> &'static str {
+                self.name
+            }
+
+            fn dataset(&self) -> &Dataset {
+                &self.dataset
+            }
+
+            fn metric(&self) -> Metric {
+                Metric::Euclidean
+            }
+
+            fn search(
+                &self,
+                _query: &[f32],
+                _k: usize,
+            ) -> vector_core_starter::Result<Vec<Neighbor>> {
+                unreachable!("report formatting does not search")
+            }
+        }
+
+        #[test]
+        fn a_short_index_does_not_abort_the_five_index_report() {
+            let dataset = Dataset::try_new((0..100).map(|row| vec![row as f32]).collect()).unwrap();
+            let workload = Workload {
+                mode: Mode::Smoke,
+                truth: Truth::RecomputedFlatSelectedBase,
+                dataset: dataset.clone(),
+                queries: vec![vec![0.0]],
+                exact_top_100: vec![(0..100).collect()],
+            };
+            let indexes = INDEX_NAMES
+                .iter()
+                .copied()
+                .zip(INDEX_CONFIGS)
+                .map(|(name, config)| BuiltIndex {
+                    name,
+                    config,
+                    index: Box::new(ReportIndex {
+                        name,
+                        dataset: dataset.clone(),
+                    }),
+                    build_time: Duration::from_millis(1),
+                })
+                .collect::<Vec<_>>();
+            let runs = (0..INDEX_COUNT)
+                .map(|ordinal| {
+                    let returned = if ordinal == 3 { 50 } else { 100 };
+                    TimedRun {
+                        latencies: vec![Duration::from_millis(1)],
+                        results: vec![
+                            (0..returned)
+                                .map(|row| Neighbor {
+                                    row,
+                                    distance: row as f32,
+                                })
+                                .collect(),
+                        ],
+                    }
+                })
+                .collect::<Vec<_>>();
+            let lines = format_report(
+                &workload,
+                &indexes,
+                &runs,
+                PqAccounting {
+                    codes_bytes: 1,
+                    codebooks_bytes: 1,
+                    full_vectors_bytes: 100,
+                },
+            )
+            .unwrap();
+            assert_eq!(lines.len(), 7);
+            assert!(lines[4].contains("hnsw:"));
+            assert!(lines[4].contains("overlap@100=0.5000"));
+            assert!(lines[4].contains("returned_min=50, returned_avg=50.0, returned_max=50"));
+        }
+
+        #[test]
+        fn a_broken_fifth_index_aborts_the_report_transactionally() {
+            let dataset = Dataset::try_new((0..100).map(|row| vec![row as f32]).collect()).unwrap();
+            let workload = Workload {
+                mode: Mode::Smoke,
+                truth: Truth::RecomputedFlatSelectedBase,
+                dataset: dataset.clone(),
+                queries: vec![vec![0.0]],
+                exact_top_100: vec![(0..100).collect()],
+            };
+            let indexes = INDEX_NAMES
+                .iter()
+                .copied()
+                .zip(INDEX_CONFIGS)
+                .map(|(name, config)| BuiltIndex {
+                    name,
+                    config,
+                    index: Box::new(ReportIndex {
+                        name,
+                        dataset: dataset.clone(),
+                    }),
+                    build_time: Duration::from_millis(1),
+                })
+                .collect::<Vec<_>>();
+            let runs = (0..INDEX_COUNT)
+                .map(|ordinal| {
+                    let mut neighbors = (0..100)
+                        .map(|row| Neighbor {
+                            row,
+                            distance: row as f32,
+                        })
+                        .collect::<Vec<_>>();
+                    if ordinal == INDEX_COUNT - 1 {
+                        neighbors[99] = neighbors[98];
+                    }
+                    TimedRun {
+                        latencies: vec![Duration::from_millis(1)],
+                        results: vec![neighbors],
+                    }
+                })
+                .collect::<Vec<_>>();
+
+            assert!(
+                format_report(
+                    &workload,
+                    &indexes,
+                    &runs,
+                    PqAccounting {
+                        codes_bytes: 1,
+                        codebooks_bytes: 1,
+                        full_vectors_bytes: 100,
+                    },
+                )
+                .is_err()
+            );
         }
 
         #[test]

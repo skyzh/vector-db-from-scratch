@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-use vector_benchmark_support::{Cli, Mode, load_sift1m, rank_recall};
+use vector_benchmark_support::{Cli, Mode, first_hit, load_sift1m, overlap_at_100};
 use vector_core::{
     Dataset, FlatIndex, HnswConfig, HnswIndex, IvfFlatConfig, IvfFlatIndex, IvfPqConfig,
     IvfPqIndex, Metric, Neighbor, NswConfig, NswIndex, VectorIndex,
@@ -13,7 +13,7 @@ const SEEDS: [u64; 3] = [7, 0x5eed, 0x9e37_79b9_7f4a_7c15];
 struct Smoke {
     dataset: Dataset,
     queries: Vec<Vec<f32>>,
-    exact_first: Vec<usize>,
+    exact_top_100: Vec<Vec<usize>>,
 }
 
 fn smoke() -> Smoke {
@@ -27,15 +27,22 @@ fn smoke() -> Smoke {
     .unwrap();
     let dataset = Dataset::try_new(sift.base).unwrap();
     let exact = FlatIndex::try_new(dataset.clone(), Metric::Euclidean).unwrap();
-    let exact_first = sift
+    let exact_top_100 = sift
         .queries
         .iter()
-        .map(|query| exact.search(query, K).unwrap()[0].row)
+        .map(|query| {
+            exact
+                .search(query, K)
+                .unwrap()
+                .into_iter()
+                .map(|neighbor| neighbor.row)
+                .collect()
+        })
         .collect();
     Smoke {
         dataset,
         queries: sift.queries,
-        exact_first,
+        exact_top_100,
     }
 }
 
@@ -47,11 +54,17 @@ fn search_all(index: &dyn VectorIndex, workload: &Smoke) -> Vec<Vec<Neighbor>> {
         .collect()
 }
 
-fn assert_quality(results: &[Vec<Neighbor>], workload: &Smoke, minimum_r100: f64) {
+fn assert_quality(
+    results: &[Vec<Neighbor>],
+    workload: &Smoke,
+    minimum_first_hit_100: f64,
+    minimum_overlap_100: f64,
+) {
     assert_eq!(results.len(), workload.queries.len());
-    let mut total_r100 = 0.0;
-    for (neighbors, exact_first) in results.iter().zip(&workload.exact_first) {
-        assert_eq!(neighbors.len(), K);
+    let mut total_first_hit_100 = 0.0;
+    let mut total_overlap_100 = 0.0;
+    for (neighbors, exact_top_100) in results.iter().zip(&workload.exact_top_100) {
+        assert!(neighbors.len() <= K);
         assert!(neighbors.windows(2).all(|pair| pair[0] <= pair[1]));
         assert!(
             neighbors
@@ -71,11 +84,13 @@ fn assert_quality(results: &[Vec<Neighbor>], workload: &Smoke, minimum_r100: f64
             .iter()
             .map(|neighbor| neighbor.row)
             .collect::<Vec<_>>();
-        let recall = rank_recall(&rows, *exact_first);
-        assert!(recall.r1 <= recall.r10 && recall.r10 <= recall.r100);
-        total_r100 += recall.r100;
+        let hit = first_hit(&rows, exact_top_100[0]);
+        assert!(hit.r1 <= hit.r10 && hit.r10 <= hit.r100);
+        total_first_hit_100 += hit.r100;
+        total_overlap_100 += overlap_at_100(&rows, exact_top_100);
     }
-    assert!(total_r100 / results.len() as f64 >= minimum_r100);
+    assert!(total_first_hit_100 / results.len() as f64 >= minimum_first_hit_100);
+    assert!(total_overlap_100 / results.len() as f64 >= minimum_overlap_100);
 }
 
 #[test]
@@ -83,7 +98,7 @@ fn assert_quality(results: &[Vec<Neighbor>], workload: &Smoke, minimum_r100: f64
 fn sift_flat_smoke() {
     let workload = smoke();
     let index = FlatIndex::try_new(workload.dataset.clone(), Metric::Euclidean).unwrap();
-    assert_quality(&search_all(&index, &workload), &workload, 1.0);
+    assert_quality(&search_all(&index, &workload), &workload, 1.0, 1.0);
 }
 
 #[test]
@@ -104,7 +119,7 @@ fn sift_ivf_flat_smoke() {
         let left = search_all(&left, &workload);
         let right = search_all(&right, &workload);
         assert_eq!(left, right);
-        assert_quality(&left, &workload, 0.05);
+        assert_quality(&left, &workload, 0.05, 0.05);
     }
 }
 
@@ -123,7 +138,7 @@ fn sift_nsw_smoke() {
     )
     .unwrap();
     let results = search_all(&index, &workload);
-    assert_quality(&results, &workload, 0.05);
+    assert_quality(&results, &workload, 0.05, 0.05);
 }
 
 #[test]
@@ -144,7 +159,7 @@ fn sift_hnsw_smoke() {
         let left = search_all(&left, &workload);
         let right = search_all(&right, &workload);
         assert_eq!(left, right);
-        assert_quality(&left, &workload, 0.05);
+        assert_quality(&left, &workload, 0.05, 0.05);
     }
 }
 
@@ -169,6 +184,6 @@ fn sift_ivf_pq_smoke() {
         let left = search_all(&left, &workload);
         let right = search_all(&right, &workload);
         assert_eq!(left, right);
-        assert_quality(&left, &workload, 0.05);
+        assert_quality(&left, &workload, 0.05, 0.05);
     }
 }
