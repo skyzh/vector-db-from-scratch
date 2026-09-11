@@ -100,12 +100,12 @@ implementations.
 | Flat | `exact` |
 | IVFFlat | `partitions=32,probes=6,iterations=12,seed=7` |
 | NSW | `max_connections=12,ef_construction=64,ef_search_configured=40,ef_search_effective=100` |
-| HNSW | `max_connections=12,ef_construction=64,ef_search=40,max_level=12,seed=7` |
+| HNSW | `max_connections=12,ef_construction=64,ef_search_configured=40,ef_search_effective=100,max_level=12,seed=7` |
 | IVF-PQ | `partitions=32,probes=6,iterations=12,subquantizers=4,codebook_size=16,rerank=100,seed=7` |
 
-These are the Rust course configurations, not universal tuning advice. One detail in the NSW row is easy to miss: the
-stored search width is 40, but `search(query, 100)` uses `max(ef_search, k)`, so this benchmark actually explores with
-an effective width of 100. The report records both numbers instead of presenting 40 as the work performed.
+These are the Rust course configurations, not universal tuning advice. One detail in the NSW and HNSW rows is easy to
+miss: the stored search width is 40, but `search(query, 100)` uses `max(ef_search, k)`, so this benchmark actually
+explores with an effective width of 100. The report records both numbers instead of presenting 40 as the work performed.
 
 ## Checkpoint 1: Construct the Remaining Indexes
 

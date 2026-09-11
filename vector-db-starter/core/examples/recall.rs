@@ -20,7 +20,7 @@ const INDEX_CONFIGS: [&str; INDEX_COUNT] = [
     "exact",
     "partitions=32,probes=6,iterations=12,seed=7",
     "max_connections=12,ef_construction=64,ef_search_configured=40,ef_search_effective=100",
-    "max_connections=12,ef_construction=64,ef_search=40,max_level=12,seed=7",
+    "max_connections=12,ef_construction=64,ef_search_configured=40,ef_search_effective=100,max_level=12,seed=7",
     "partitions=32,probes=6,iterations=12,subquantizers=4,codebook_size=16,rerank=100,seed=7",
 ];
 
@@ -493,6 +493,10 @@ mod day_06 {
             assert_eq!(nsw_config().ef_search, 40);
             assert!(INDEX_CONFIGS[2].contains("ef_search_configured=40,ef_search_effective=100"));
             assert_eq!((hnsw_config().max_level, hnsw_config().seed), (12, 7));
+            assert_eq!(
+                INDEX_CONFIGS[3],
+                "max_connections=12,ef_construction=64,ef_search_configured=40,ef_search_effective=100,max_level=12,seed=7"
+            );
             let pq = ivf_pq_config();
             assert_eq!(
                 (pq.subquantizers, pq.codebook_size, pq.rerank, pq.seed),
