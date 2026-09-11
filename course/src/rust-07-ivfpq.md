@@ -112,16 +112,8 @@ residuals, and codeword scores relate, so those metrics return a configuration e
 
 ## Checkpoint 1: Validate the Layout
 
-Implement `IvfPqIndex::try_new`. Validate before training:
-
-- `1 <= probes <= partitions <= rows` and `iterations > 0`;
-- `subquantizers > 0` and the dimension divides evenly into that many slices;
-- `2 <= codebook_size <= min(256, rows)`;
-- `rerank > 0`; and
-- the metric is Euclidean.
-
-Run the focused validation boundary. Its supplied test checks the Euclidean-only metric and requires the subquantizer
-count to divide the vector dimension:
+Begin `IvfPqIndex::try_new` with the two invalid cases exercised by the supplied Checkpoint 1 test: reject any metric
+except Euclidean, and reject a subquantizer count that does not divide the vector dimension.
 
 ```sh
 cargo xtask test day_05::checkpoint_1
@@ -129,10 +121,20 @@ cargo xtask test day_05::checkpoint_1
 
 ## Checkpoint 2: Train and Encode Residual Codebooks
 
+Checkpoint 2 is the first supplied test that constructs a valid index. Before that construction can reach training,
+add the remaining constructor checks:
+
+- `1 <= probes <= partitions <= rows` and `iterations > 0`;
+- `subquantizers > 0`;
+- `2 <= codebook_size <= min(256, rows)`; and
+- `rerank > 0`.
+
+These checks are required prerequisites for Checkpoint 2. Its supplied cases use valid values for them rather than
+grading their failure branches individually.
+
 Continue `try_new` by building the coarse partition with the configured partitions, probes, iterations, and seed. Once
 its final centroids are known, assign every row again and compute `row - centroid`. That final reassignment gives every
-row exactly one list and ensures its residual uses the centroid for that list. Checkpoint 2 is the first supplied test
-that constructs a valid index and observes this path.
+row exactly one list and ensures its residual uses the centroid for that list.
 
 Split every residual into equal contiguous slices. For each subquantizer:
 
