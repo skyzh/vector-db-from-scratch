@@ -5,26 +5,21 @@
 > Complete [Add Hierarchy with HNSW](./rust-05-hnsw.md) first. Build a residual IVF-PQ index that scores compact codes,
 > reranks a shortlist with full vectors, and exposes the representation accounting used by the final benchmark.
 
-IVFFlat avoids comparing a query with every row, but it still reads every component of every vector in the probed lists.
-Product quantization replaces that candidate-scoring representation with a short sequence of learned codeword IDs.
+IVFFlat narrows a query to a few lists, but scoring those lists still reads every component of every candidate vector.
+On a large dataset, that inner loop can dominate the search. IVF-PQ keeps the coarse lists and replaces each candidate's
+scoring representation with a short sequence of learned codeword IDs. It uses those IDs to choose a shortlist, then
+returns to the original vectors for the final distances.
 
-Day 5 follows the product-quantization design introduced by
-[Jégou, Douze, and Schmid](https://doi.org/10.1109/TPAMI.2010.57). It combines a coarse IVF partition with product
-quantization of residuals, the structure commonly called IVFADC or IVF-PQ. The
-[Faiss index guide](https://github.com/facebookresearch/faiss/wiki/Faiss-indexes#summary-of-methods) uses the same
-coarse-quantizer-plus-residual-PQ decomposition.
-
-## Split Residuals into Subvectors
-
-Suppose a residual has eight dimensions. Split it into two four-dimensional subvectors:
+Follow one row through that path. Its IVF centroid `c` chooses the list. Subtracting `c` from the row vector `x` gives an
+eight-dimensional residual, which we split into two four-dimensional pieces:
 
 ```text
 residual = [ 0.7, -0.1, 0.3, 0.2 | -0.4, 0.8, 0.1, -0.2 ]
              subvector 0              subvector 1
 ```
 
-Train a separate codebook for each subvector position. If each codebook has four codewords, encoding chooses one ID from
-each side:
+Each slice position has its own codebook. With four codewords in each codebook, this residual is represented by two
+choices:
 
 ```text
 subvector 0 -> codeword 2
@@ -32,51 +27,58 @@ subvector 1 -> codeword 0
 PQ code     -> [2, 0]
 ```
 
-The course stores each ID as a `u8`, so an encoded row uses one byte per subquantizer. Shared codebooks add a fixed cost
-rather than a full vector for every row.
-
-IVF already assigns every vector `x` to a coarse centroid `c`. Encode the residual instead of the original vector:
+The course stores each ID as a `u8`, so this row contributes two code bytes. The codebooks are shared by every row. What
+they approximate is the residual, not the original vector:
 
 ```text
 r = x - c
 ```
 
-Keep the two learned structures distinct:
+That distinction matters during search. The IVF centroid decides which lists are probed; each PQ codeword approximates
+one slice of a residual within those lists. Rebuilding with equal data and configuration must reproduce the same coarse
+centroids, PQ codebooks, list sizes, codes, and search results.
+
+For a query `q`, each probed list has its own centroid `c`. Subtract that same `c` from the query and compare each query
+slice with the codewords for that position:
 
 - an **IVF centroid** chooses the inverted list;
 - a **PQ codeword** approximates one slice of the residual inside that list.
 
-Equal data and configuration must produce equal coarse centroids, PQ codebooks, list sizes, codes, and search results.
+This is the residual IVF-PQ design introduced by
+[Jégou, Douze, and Schmid](https://doi.org/10.1109/TPAMI.2010.57), often called IVFADC. The
+[Faiss index guide](https://github.com/facebookresearch/faiss/wiki/Faiss-indexes#summary-of-methods) describes the same
+coarse-quantizer-plus-residual-PQ decomposition.
 
-## Score Codes, then Rerank
+## Score the Codes, then Rerank
 
-For each probed list, subtract its coarse centroid from the query and build one squared-Euclidean lookup table per
-subquantizer:
+Build one squared-Euclidean lookup table for every slice position in the probed list:
 
 ```text
 table[m][j] = squared_l2((query - coarse_centroid)[m], codebook[m][j])
 ```
 
-A row's approximate score is a sum of table lookups:
+The encoded row `[2, 0]` now needs two table reads instead of reading its eight stored components:
 
 ```text
 score(code) = table[0][code[0]] + ... + table[M - 1][code[M - 1]]
 ```
 
-The query stays full precision while stored residuals are quantized, so this is asymmetric distance computation. Keep
-the best `min(max(rerank, k), rows)` row offsets under the approximate score, then compute exact Euclidean distance from
-the original dataset and select the final `k`:
+The query remains full precision while the stored residual is quantized, which makes this asymmetric distance
+computation. Apply the same lookup process to every encoded row in the probed lists and retain the best
+`min(max(rerank, k), rows)` row offsets. Those offsets stay attached to their source rows when the original vectors are
+read for exact Euclidean reranking:
 
 ```text
 probed lists -> PQ score -> rerank shortlist -> exact distance -> top-k
 ```
 
-The base `Dataset` remains available for exact reranking. Therefore `encoded_bytes()` plus `codebook_bytes()` describes
-the PQ **search representation**, not total index or process memory. It excludes retained full vectors, coarse centroids,
-row IDs, list allocations, and other overhead.
+With four subquantizers and sixteen codewords per codebook, one probed list builds 64 lookup entries. Each encoded row
+then reads four entries and combines them into one approximate score. The base `Dataset` remains available because the
+shortlist still needs exact reranking.
 
-**Prediction:** With four subquantizers and sixteen codewords per codebook, how many table entries does one probed list
-need? How many additions score one encoded row after the tables exist?
+This also fixes the meaning of the byte counters. `encoded_bytes()` plus `codebook_bytes()` measures only the PQ search
+representation. It does not include the retained full vectors, coarse centroids, row IDs, list allocations, or other
+index and process overhead.
 
 ## Build IVF-PQ in Rust
 
@@ -87,10 +89,11 @@ vector-db-starter/core/src/pq.rs
 ```
 
 The starter already exposes `IvfPqConfig`, `IvfPqIndex`, its `VectorIndex` implementation, byte-accounting methods, and
-the DataFusion `IndexConfig::IvfPq` path. Keep those public APIs, existing indexes, and tests unchanged.
+the DataFusion `IndexConfig::IvfPq` path. Your two unfinished units are `IvfPqIndex::try_new` and
+`IvfPqIndex::search_with_probes`; the first two checkpoints develop different parts of the same `try_new` implementation.
 
-All commands on this page exercise the cumulative starter workspace. Complete Days 1–4 first; an untouched
-starter stops at an earlier `todo!()` before it reaches Day 5.
+All commands on this page run against the cumulative starter workspace. Complete Days 1–4 first, because an untouched
+starter reaches an earlier `todo!()` before it can exercise Day 5.
 
 `IvfPqConfig` separates the main budgets:
 
@@ -104,30 +107,34 @@ starter stops at an earlier `todo!()` before it reaches Day 5.
 | `rerank` | Full-precision shortlist budget |
 | `seed` | Reproducible training seed |
 
-The index accepts only `Metric::Euclidean`. Cosine and inner-product quantization need additional representation and
-scoring choices; returning plausible numbers would not establish a consistent metric contract.
+This implementation accepts only `Metric::Euclidean`. Supporting cosine or inner product would change how vectors,
+residuals, and codeword scores relate, so those metrics return a configuration error here.
 
-## Checkpoint 1: Validate the Layout and Build Coarse Lists
+## Checkpoint 1: Validate the Layout
 
-Implement `IvfPqIndex::try_new`. Validate before training:
-
-- `1 <= probes <= partitions <= rows` and `iterations > 0`;
-- `subquantizers > 0` and the dimension divides evenly into that many slices;
-- `2 <= codebook_size <= min(256, rows)`;
-- `rerank > 0`; and
-- the metric is Euclidean.
-
-Build the coarse partition with the same partitions, probes, iterations, and seed. Assign every row against the final
-centroids, then compute `row - centroid`. Rebuilding membership after the final centroid update preserves the complete
-one-list-per-row invariant from Day 2.
-
-Run the focused layout boundary:
+Begin `IvfPqIndex::try_new` with the two invalid cases exercised by the supplied Checkpoint 1 test: reject any metric
+except Euclidean, and reject a subquantizer count that does not divide the vector dimension.
 
 ```sh
 cargo xtask test day_05::checkpoint_1
 ```
 
 ## Checkpoint 2: Train and Encode Residual Codebooks
+
+Checkpoint 2 is the first supplied test that constructs a valid index. Before that construction can reach training,
+add the remaining constructor checks:
+
+- `1 <= probes <= partitions <= rows` and `iterations > 0`;
+- `subquantizers > 0`;
+- `2 <= codebook_size <= min(256, rows)`; and
+- `rerank > 0`.
+
+These checks are required prerequisites for Checkpoint 2. Its supplied cases use valid values for them rather than
+grading their failure branches individually.
+
+Continue `try_new` by building the coarse partition with the configured partitions, probes, iterations, and seed. Once
+its final centroids are known, assign every row again and compute `row - centroid`. That final reassignment gives every
+row exactly one list and ensures its residual uses the centroid for that list.
 
 Split every residual into equal contiguous slices. For each subquantizer:
 
@@ -137,19 +144,20 @@ Split every residual into equal contiguous slices. For each subquantizer:
 4. replace each non-empty codeword with the component-wise mean of its assignments; and
 5. stop after convergence or `iterations` rounds.
 
-Keep a codeword unchanged when its cluster is empty. Reuse the deterministic RNG from `src/search.rs`, deriving a
-different deterministic seed for each subquantizer. Then encode every row with exactly one valid `u8` code per
-subquantizer.
+When a cluster receives no residual slices, leave that codeword unchanged. Reuse the deterministic RNG from
+`src/search.rs`, but derive a different deterministic seed for each subquantizer so their initial row choices are
+independent. After training, encode every row with exactly one valid `u8` code for each slice position.
 
 ```sh
 cargo xtask test day_05::checkpoint_2
 ```
 
-The test checks deterministic training, complete list membership, code layout, and byte accounting.
+This gate checks deterministic training, complete list membership, code layout, and byte accounting. At this point
+`try_new` is complete; the index is built, but its search function remains the second starter `todo!()`.
 
 ## Checkpoint 3: Scan Codes and Rerank
 
-Implement `search_with_probes`:
+Implement `search_with_probes` by following the query path from the opening trace:
 
 1. validate the query, probe count, and nonzero rerank budget;
 2. rank coarse centroids and visit the nearest lists;
@@ -158,10 +166,10 @@ Implement `search_with_probes`:
 5. compute exact Euclidean distances for the shortlist row offsets; and
 6. return exact top-k results in the public `(distance, row)` order.
 
-Keep coarse selection, lookup scores, and exact rerank distances in `f64`. At the public `Neighbor` boundary, retain only
-finite distances representable as `f32`, convert them, and apply the public tie-break. Row identity must remain attached
-to each code through both candidate stages. If discarding an unrepresentable exact distance would leave fewer than
-`min(k, rows)` results, return an error instead of silently returning an incomplete result.
+Use `f64` for coarse selection, lookup sums, and exact rerank distances. A value crosses the public `Neighbor` boundary
+only when it is finite and representable as `f32`; convert there and apply the public `(distance, row)` order. Keep the
+row offset beside every code and every shortlisted distance. If unrepresentable exact distances leave fewer than
+`min(k, rows)` valid results, return an error instead of a shortened answer.
 
 Run the complete Checkpoint 3 gate:
 
@@ -169,9 +177,10 @@ Run the complete Checkpoint 3 gate:
 cargo xtask test day_05::checkpoint_3
 ```
 
-It probes every list and reranks every row as an exactness boundary. The remaining cases cover large finite values,
-representability, and public ordering, and confirm that the unchanged Day 1 adapter can select the completed Euclidean
-index. The physical plan names `index=ivf_pq` while retaining the same conservative matcher and final bounded sort.
+This checkpoint probes every list and reranks every row, so its result must match exact search for that bounded case.
+The other cases cover large finite values, representation failures, public ordering, and the unchanged Day 1 adapter.
+The physical plan names `index=ivf_pq`; the matcher remains conservative and DataFusion still applies the final bounded
+sort.
 
 ## Checkpoint 4: Inspect the Search Representation
 
@@ -181,9 +190,9 @@ For any built index:
 - `codebook_bytes()` counts shared PQ codeword components;
 - `full_precision_bytes()` counts the retained dataset's vector components.
 
-Do not describe the ratio between full-precision vector bytes and code-plus-codebook bytes as total-memory compression.
-The final day prints the exact accounting beside the shared five-index benchmark, where its scope can be read with
-the workload and search configuration.
+These counters let the final day print the retained vector components beside the codes and shared codebooks. Their ratio
+is useful only for that representation accounting: it is not total-memory compression and it is not a measured speed or
+quality result.
 
 ## Return to the SQL Product
 
@@ -215,10 +224,11 @@ and returns:
 4 point-4
 ```
 
-This fixture verifies one deterministic handoff from an exact scan to the supplied IVF-PQ SQL adapter. It does not
-establish external-corpus recall, latency, memory use, or general exactness.
+The fixture gives you one deterministic handoff from an exact scan to the supplied IVF-PQ SQL adapter. The matcher still
+falls back for unsupported query shapes, and the bounded final sort stays in the plan. Broader recall, latency, and
+memory comparisons belong to the final benchmark workload.
 
-## Day 5 Review
+## Check the Completed Day
 
 Run the Day 5 focused gate, then the cumulative course through Day 5:
 
@@ -227,17 +237,13 @@ cargo xtask test day_05
 cargo xtask test-through day_05
 ```
 
-After the IVF-PQ core tests and DataFusion plan check pass, explain:
+When both commands pass, trace one result all the way back: its coarse centroid chose a list, its residual slices chose
+PQ codewords, lookup sums placed its row offset in the shortlist, and its retained original vector supplied the exact
+distance used by the final ordering. The three byte counters describe the representations used along that path; they do
+not measure the whole index.
 
-- why IVF centroids and PQ codewords solve different parts of search;
-- why stored and query residuals use the selected list's same coarse centroid;
-- how asymmetric lookup tables avoid reconstructing every candidate;
-- why reranking still needs the original vectors;
-- which bytes the search-representation accounting includes and excludes; and
-- why a compact representation alone does not establish a latency or recall ranking.
-
-Keep Day 5 focused on an executable IVF-PQ mental model. Bit-packed codes, cosine or inner-product support,
-optimized product quantization, SIMD table scans, persistent layouts, training samples separate from indexed rows, and
-removing full vectors from memory remain outside its scope.
+Day 5 leaves bit-packed codes, cosine and inner-product support, optimized product quantization, SIMD table scans,
+persistent layouts, separate training samples, and removing full vectors from memory for later work. The next chapter
+uses a fixed external workload to make measured comparisons across all five indexes.
 
 {{#include copyright.md}}
