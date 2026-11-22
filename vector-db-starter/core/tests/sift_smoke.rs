@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-use vector_benchmark_support::{Cli, Mode, first_hit, load_sift1m, overlap_at_100};
+use vector_benchmark_support::{Cli, Mode, exact_nn_hit, load_sift1m, recall_at_100};
 use vector_core_starter::{
     Dataset, FlatIndex, HnswConfig, HnswIndex, IvfFlatConfig, IvfFlatIndex, IvfPqConfig,
     IvfPqIndex, Metric, Neighbor, NswConfig, NswIndex, VectorIndex,
@@ -57,12 +57,12 @@ fn search_all(index: &dyn VectorIndex, workload: &Smoke) -> Vec<Vec<Neighbor>> {
 fn assert_quality(
     results: &[Vec<Neighbor>],
     workload: &Smoke,
-    minimum_first_hit_100: f64,
-    minimum_overlap_100: f64,
+    minimum_exact_nn_hit_100: f64,
+    minimum_recall_100: f64,
 ) {
     assert_eq!(results.len(), workload.queries.len());
-    let mut total_first_hit_100 = 0.0;
-    let mut total_overlap_100 = 0.0;
+    let mut total_exact_nn_hit_100 = 0.0;
+    let mut total_recall_100 = 0.0;
     for (neighbors, exact_top_100) in results.iter().zip(&workload.exact_top_100) {
         assert!(neighbors.len() <= K);
         assert!(neighbors.windows(2).all(|pair| pair[0] <= pair[1]));
@@ -84,13 +84,13 @@ fn assert_quality(
             .iter()
             .map(|neighbor| neighbor.row)
             .collect::<Vec<_>>();
-        let hit = first_hit(&rows, exact_top_100[0]);
+        let hit = exact_nn_hit(&rows, exact_top_100[0]);
         assert!(hit.r1 <= hit.r10 && hit.r10 <= hit.r100);
-        total_first_hit_100 += hit.r100;
-        total_overlap_100 += overlap_at_100(&rows, exact_top_100);
+        total_exact_nn_hit_100 += hit.r100;
+        total_recall_100 += recall_at_100(&rows, exact_top_100);
     }
-    assert!(total_first_hit_100 / results.len() as f64 >= minimum_first_hit_100);
-    assert!(total_overlap_100 / results.len() as f64 >= minimum_overlap_100);
+    assert!(total_exact_nn_hit_100 / results.len() as f64 >= minimum_exact_nn_hit_100);
+    assert!(total_recall_100 / results.len() as f64 >= minimum_recall_100);
 }
 
 mod day_06 {
