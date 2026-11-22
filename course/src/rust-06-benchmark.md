@@ -2,96 +2,35 @@
 
 > **Day 6**
 >
-> Complete [Compress IVFFlat with Product Quantization](./rust-07-ivfpq.md) first. Then bring Flat, IVFFlat, NSW,
-> HNSW, and IVF-PQ together in one release-mode benchmark over the external SIFT1M corpus.
+> Complete [Compress IVFFlat with Product Quantization](./rust-07-ivfpq.md) first. Then compare Flat, IVFFlat, NSW,
+> HNSW, and IVF-PQ in the same release-mode benchmark, using Euclidean search with `k = 100`.
 
-This final day gives the five indexes the same work: Euclidean search with `k = 100`. With SIFT1M on disk, your first
-useful run is smoke mode. It validates the complete corpus, keeps 10,000 base rows and 100 queries, recomputes exact
-top-100 truth for that smaller base, builds every index, and reports latency and quality from the same searches.
-Progress goes to standard error while the finished report goes to standard output, so you can redirect the report
-without losing sight of a long-running phase.
-
-The course does not contain a benchmark result to copy. You will finish the executable, check it without a corpus, and
-then decide whether to run smoke mode or the much larger full experiment on your own machine.
+Finish and test the benchmark before acquiring SIFT1M. Start with smoke mode to check the whole workflow on a smaller
+base. Then use sampled mode to compare the five indexes at one million base vectors. The optional full run uses
+every query in the corpus.
 
 ## Start from the Completed Indexes
 
-Your Day 5 starter already contains the five index implementations. Keep that boundary green from the repository root:
+Use the checkout where you completed Days 1–5. If you are starting from a fresh clone, finish those exercises first
+and verify the earlier work from the repository root.
 
 ```sh
 cargo xtask test-through day_05
 ```
 
-Now open:
+Open `vector-db-starter/core/examples/recall.rs`. The benchmark support crate parses the command line, validates the
+SIFT files, pairs selected queries with their truth rows, runs warm-up and timed searches, and supplies the quality
+and percentile helpers. The example fixes the five configurations, output format, result validation, and IVF-PQ
+byte accounting.
 
-```text
-vector-db-starter/core/examples/recall.rs
-```
-
-Most of the benchmark is supplied. The `vector-db-from-scratch-benchmark-support` crate parses the command line,
-validates SIFT files, selects full or smoke sizes, balances warm-up and timed searches, computes quality, and selects
-latency percentiles. The example fixes the five configurations, output format, result validation, and IVF-PQ byte
-accounting.
-
-Four `todo!()` calls are yours. Checkpoint 1 replaces the three constructor TODOs for NSW, HNSW, and IVF-PQ. Checkpoint
-2 replaces `report_percentiles` with calls to the supplied nearest-rank helper. Nothing else in the example needs to be
-designed for this day.
-
-The support crate has a fast, corpus-free test suite. Run it before editing:
+Start with the support crate's corpus-free checks.
 
 ```sh
 cargo test -p vector-db-from-scratch-benchmark-support
 ```
 
-With your Days 1–5 work in place, the Day 6 selector should stop at the four new TODO boundaries:
-
-```sh
-cargo xtask test day_06
-```
-
-A fresh checkout still has earlier-course TODOs and will fail before it reaches this boundary. Either way, no SIFT1M
-download is needed for the selector.
-
-## Acquire and Validate SIFT1M
-
-Obtain SIFT1M from the [TexMex ANN corpus](http://corpus-texmex.irisa.fr/) and follow the terms published there. The
-course neither redistributes the corpus nor supplies an archive checksum or a separate dataset license claim.
-
-Pass a directory that directly contains these three extracted files:
-
-| File | Records | Width | Exact bytes |
-| --- | ---: | ---: | ---: |
-| `sift_base.fvecs` | 1,000,000 | 128 `f32` values | 516,000,000 |
-| `sift_query.fvecs` | 10,000 | 128 `f32` values | 5,160,000 |
-| `sift_groundtruth.ivecs` | 10,000 | 100 `i32` row IDs | 4,040,000 |
-
-Both modes scan all three files before building an index. The loader checks every little-endian dimension header, the
-exact record and byte counts, truncation and trailing bytes, finite vector components, and ground-truth IDs that are
-nonnegative, in range, and unique within a row. A usage error exits with status 2; a data or index error exits with
-status 1. The only public invocation shape is:
-
-```text
-usage: recall [--smoke] <sift1m-dir>
-```
-
-There is no synthetic fallback, arbitrary row limit, environment-variable run mode, or interactive prompt. Only the
-ignored integration tests use `SIFT1M_DIR` to locate a developer's corpus.
-
-## What Smoke Mode Changes
-
-| Field | Full/default | Smoke |
-| --- | --- | --- |
-| Report labels | `mode=sift1m-full`, `parity=bustub-sift1m` | `mode=sift1m-smoke`, `parity=non-parity` |
-| Base rows | 1,000,000 | first 10,000 |
-| Queries | 10,000 | first 100 |
-| Dimension, metric, `k` | 128, Euclidean, 100 | 128, Euclidean, 100 |
-| Exact top-100 truth | supplied SIFT ground-truth row | Flat search over the selected 10,000 rows |
-
-Smoke mode is not a miniature parity result. Its exact neighbors are recomputed after the base changes, so its quality
-and timing describe the selected subset only. Full mode uses all one million base vectors, all 10,000 queries, and the
-supplied exact top 100. Its parity label records the corpus, Euclidean ordering, `k = 100`, first-neighbor hit rates, and
-top-100 overlap; it does not claim identical parameters, storage, floating-point paths, or timings across other
-implementations.
+Four `todo!()` calls remain in the benchmark example. The focused commands below select its two checkpoints
+directly. The broader `cargo xtask` commands also build the DataFusion workspace for the course-wide checks.
 
 ## Keep the Five Configurations Fixed
 
@@ -103,131 +42,124 @@ implementations.
 | HNSW | `max_connections=12,ef_construction=64,ef_search_configured=40,ef_search_effective=100,max_level=12,seed=7` |
 | IVF-PQ | `partitions=32,probes=6,iterations=12,subquantizers=4,codebook_size=16,rerank=100,seed=7` |
 
-These are the Rust course configurations, not universal tuning advice. One detail in the NSW and HNSW rows is easy to
-miss: the stored search width is 40, but `search(query, 100)` uses `max(ef_search, k)`, so this benchmark actually
-explores with an effective width of 100. The report records both numbers instead of presenting 40 as the work performed.
+For NSW and HNSW, `search(query, 100)` uses `max(ef_search, k)`. The stored search width is 40 and the effective
+width is 100.
 
-## Checkpoint 1: Construct the Remaining Indexes
+## Checkpoint 1. Construct the Remaining Indexes
 
-Replace `build_nsw`, `build_hnsw`, and `build_ivf_pq` with their matching constructors. Pass through the supplied
-dataset, metric, and configuration, and return constructor errors rather than switching to another index or setting.
-
-The example prepares each immutable dataset clone, metric, and configuration before starting the clock. Preserve that
-line: a `build_s` sample contains only the constructor. File loading, validation, query preparation, truth selection,
-dataset cloning, and configuration construction remain outside it.
-
-Run the constructor checkpoint:
+Run this command with your earlier work in place. Before editing Day 6, expect the test to stop at
+`Day 6: build NSW with the benchmark configuration`.
 
 ```sh
-cargo xtask test day_06::checkpoint_1
+cargo test -p vector-db-from-scratch-core-starter --example recall day_06::checkpoint_1
 ```
 
-The tests accept more than one deterministic RNG trajectory. A seed must repeat within your implementation; it does not
-make your IVFFlat centroids or HNSW levels match another implementation's internal samples.
+Replace the TODOs in `build_nsw`, `build_hnsw`, and `build_ivf_pq` with their matching constructors. Pass through
+the supplied dataset, metric, and configuration, and return the constructor's result. The example prepares the
+cloned dataset and configuration before timing each constructor. Keep that boundary so `build_s` measures the
+constructor alone.
 
-## Checkpoint 2: Select p50 and p99
+Retry the command above. It checks that each constructor preserves the given configuration and propagates errors.
+A seed makes builds of your implementation repeatable. The tests allow valid implementations with different RNG
+trajectories.
 
-Replace `report_percentiles` with two calls to the supplied `percentile` helper. The input duration slice is already
-sorted and nonempty. The helper uses nearest rank: for percentage `p` and `n` samples, it selects this zero-based
-position, clamped to the last sample:
+## Checkpoint 2. Select p50, p95, and p99
 
-```text
-ceil(p / 100 * n) - 1
-```
-
-Interpolation or a floor fraction of `n - 1` would describe a different statistic. When the p50 and p99 calls are in
-place, run the complete example boundary:
+Run the second checkpoint. With the constructors filled in, expect the percentile tests to reach
+`Day 6: select p50, p95, and p99 with the supplied nearest-rank helper`.
 
 ```sh
-cargo xtask test day_06::checkpoint_2
+cargo test -p vector-db-from-scratch-core-starter --example recall day_06::checkpoint_2
 ```
 
-This checkpoint covers the constructors and percentile selection together with the fixed inventory, configurations,
-mode-specific truth, result validation, quality and returned-count summaries, report order, and full-mode IVF-PQ
-accounting.
+Return the three percentiles in that order using `percentile` on the supplied sorted, nonempty duration slice.
+For percentage `p` and `n` samples, nearest rank selects the zero-based position `ceil(p / 100 * n) - 1`, clamped
+to the last sample.
 
-## Follow Progress without Polluting the Report
+Retry the second checkpoint. It checks percentile selection, truth selection, result validation, quality and
+returned counts, report order, and IVF-PQ accounting.
 
-The program writes best-effort progress to standard error and holds standard output until the entire report is valid.
-Redirecting stdout therefore captures only the workload, five index rows, and IVF-PQ accounting. A bad input file,
-constructor error, wrong result count, duplicate or out-of-range row, nonfinite distance, unordered result, or result
-longer than `k` aborts before any stdout report line is printed. Progress already written to stderr may remain visible.
+## Finish the Corpus-Free Checks
 
-For a noninteractive stderr stream, each counted phase prints 0%, 25%, 50%, 75%, and 100% as separate lines. A terminal
-redraws those milestones in place. Loading counts every physical row even in smoke mode because the complete files are
-still validated; recomputing smoke truth counts the selected 100 queries. Builds can expose no useful fractional work,
-so each prints only `start` and `complete`.
+The focused day and the cumulative gate compile the benchmark. The external SIFT1M tests are ignored by default.
 
-Warm-up completes 20 query rounds, or 100 searches across five indexes. The timed phase completes 100 rounds and 500
-searches in smoke mode, or 10,000 rounds and 50,000 searches in full mode. Each milestone advances only after all five
-indexes finish a round and their elapsed times have been captured. Progress writing is outside the samples, and a
-closed or unwritable stderr stream does not abort the benchmark.
+```sh
+cargo xtask test day_06
+cargo xtask test-through day_06
+```
 
-## Read the Measurement Loop
+## Acquire and Validate SIFT1M
 
-Warm-up uses the first `min(20, query_count)` queries, and the timed pass uses every selected query. Both rotate the
-starting index so that no one implementation always runs first:
+Obtain SIFT1M and follow its published terms. Extract the corpus before running the benchmark.
+[TexMex ANN corpus](http://corpus-texmex.irisa.fr/)
+
+| File directly in the corpus directory | Records | Width | Exact bytes |
+| --- | ---: | ---: | ---: |
+| `sift_base.fvecs` | 1,000,000 | 128 `f32` values | 516,000,000 |
+| `sift_query.fvecs` | 10,000 | 128 `f32` values | 5,160,000 |
+| `sift_groundtruth.ivecs` | 10,000 | 100 `i32` row IDs | 4,040,000 |
+
+The three extracted files take 525,200,000 bytes. Allow additional disk space for the archive, extraction, and
+Cargo build products. For a full-base run, plan for at least 8 GiB of available memory and roughly 1 GiB of
+working disk space beyond the corpus and build products. Runtime depends on the machine. All five indexes are
+built sequentially and kept alive together.
+
+Every mode scans all three files. The loader validates exact file sizes and record counts, little-endian dimension
+headers, finite vectors, and in-range, unique ground-truth IDs. The executable expects one directory and an optional
+mode flag. Status 2 indicates invalid arguments. Status 1 indicates an input or index error.
 
 ```text
-(query_ordinal + offset) % 5
+usage: recall [--smoke|--sampled] <sift1m-dir>
 ```
 
-Only `search(query, 100)` is inside a latency sample. Result validation, quality calculation, latency sorting,
-percentile selection, formatting, and printing happen afterward. Search errors are returned rather than skipped.
-`search_s` is the sum of all per-query samples, and `qps` is `query_count / search_s`.
+If the loader reports a missing file, check which directory directly contains the three SIFT files. Archives can
+extract into a nested directory. Retry the same command with the extracted directory as its final argument.
 
-## Interpret Quality and Under-fill
+## Run Smoke, Then Sampled SIFT1M
 
-For each query, `first_hit` follows one exact row: the first neighbor in the exact top 100. The three fields record how
-far into the returned prefix the benchmark must look before finding it:
-
-```text
-first_hit@1      exact first neighbor appears at rank 1
-first_hit@10     exact first neighbor appears somewhere in ranks 1..10
-first_hit@100    exact first neighbor appears somewhere in ranks 1..100
-```
-
-Each field is binary for one query and averaged across all selected queries. Because each wider prefix contains the
-narrower one, the final rates must satisfy:
-
-```text
-0 <= first_hit@1 <= first_hit@10 <= first_hit@100 <= 1
-0 <= overlap@100 <= 1
-```
-
-`overlap@100` answers a different question: how many returned row IDs belong to the exact top 100? It always divides by
-100. If an index returns 50 valid rows and all 50 are exact neighbors, its overlap is `0.5`, not `1.0`; the absent rows
-count as misses. `returned_min`, `returned_avg`, and `returned_max` make that valid under-fill visible instead of hiding
-it behind a quality average.
-
-The report accepts between zero and `min(k, base_rows)` distinct, in-range rows in public nearest-first `Neighbor`
-order, all with finite distances. Flat has the stronger contract: exactly 100 rows and `1.0` for every quality field.
-The ignored external smoke tests are also deliberately stricter than the general report path: they require 100 distinct
-rows from each configured index, plus exact Flat quality and broad `0.05` first-hit@100 and overlap@100 floors for the
-approximate indexes. Those floors catch broken integrations; they are not production targets.
-
-## Run Smoke, Then Full SIFT1M
-
-After both checkpoints pass, supply the extracted corpus directory. Run the first command for the 10,000-row smoke
-experiment. The second command is the optional full SIFT1M run:
+Start with the smoke command once the tests pass.
 
 ```sh
 cargo run --release -p vector-db-from-scratch-core-starter --example recall -- --smoke /absolute/path/to/sift1M
+```
+
+Then run the fixed sample for a full-base comparison on your machine.
+
+```sh
+cargo run --release -p vector-db-from-scratch-core-starter --example recall -- --sampled /absolute/path/to/sift1M
+```
+
+The optional full run uses the directory argument alone.
+
+```sh
 cargo run --release -p vector-db-from-scratch-core-starter --example recall -- /absolute/path/to/sift1M
 ```
 
-You can compare behavior with the completed executable without reading its source:
+| Mode | Base rows | Query rows | Exact top-100 truth |
+| --- | ---: | ---: | --- |
+| `sift1m-smoke` | First 10,000 | First 100 | Recomputed by Flat over the selected 10,000 rows |
+| `sift1m-sampled` | All 1,000,000 | Fixed 1,000 | Supplied rows for the same query ordinals |
+| `sift1m-full` | All 1,000,000 | All 10,000 | All supplied rows in file order |
 
-```sh
-cargo run --release -p vector-db-from-scratch-core --example recall -- --smoke /absolute/path/to/sift1M
-cargo run --release -p vector-db-from-scratch-core --example recall -- /absolute/path/to/sift1M
-```
+Smoke checks integration at a smaller base size. Sampled mode runs a tenth as many timed queries per index as full
+mode and still builds the same full-size indexes. The full run's `parity=bustub-sift1m` label identifies the
+shared corpus, Euclidean ordering, `k`, and quality definitions. Implementation and machine details still matter
+when comparing results. Smoke and sampled runs use `parity=non-parity`.
 
-The full run needs the extracted 525,200,000-byte corpus payload plus build products. Budget tens of minutes and several
-GiB of working memory; at least 8 GiB of free memory and roughly 1 GiB of free disk beyond the corpus and build outputs
-is a practical starting point, not a benchmark result or pass/fail threshold.
+To identify the sample, the harness computes a SplitMix64 key from each zero-based query ordinal plus seed
+`0x5eed`, takes the 1,000 smallest keys, and sorts the selected ordinals back into file order. It uses that same
+list for the query vectors and their supplied truth rows. Every index sees the queries in that order. The workload
+line prints `query_selection=splitmix64-key-rank-v1(seed=0x5eed)` and the sample fingerprint
+`query_ordinals_fnv1a64=3daec467e7c9a97a`. The fingerprint hashes the ordered query ordinals as little-endian
+64-bit integers with FNV-1a.
 
-If you want to exercise one index with external data, the ignored tests expose it separately. For IVF-PQ:
+For a reference run, use the same command and arguments with package `vector-db-from-scratch-core`. Each invocation
+performs its own loading and construction.
+
+### Optional single-index smoke test
+
+The external smoke tests check deterministic behavior and broad quality floors. Select one test if you need to
+diagnose one index. Each selected test reads the corpus and may build its index several times.
 
 ```sh
 SIFT1M_DIR=/absolute/path/to/sift1M \
@@ -235,51 +167,83 @@ SIFT1M_DIR=/absolute/path/to/sift1M \
   day_06::checkpoint_2::sift_ivf_pq_smoke -- --ignored --exact
 ```
 
-The analogous names end in `sift_flat_smoke`, `sift_ivf_flat_smoke`, `sift_nsw_smoke`, and `sift_hnsw_smoke` under the
-same `day_06::checkpoint_2` namespace.
+The other test names end in `sift_flat_smoke`, `sift_ivf_flat_smoke`, `sift_nsw_smoke`, and `sift_hnsw_smoke`
+under `day_06::checkpoint_2`. Set `SIFT1M_DIR` for the tests and pass the directory argument to the benchmark.
 
-## Read the Finished Report
+## Read the Report and Stage Timings
 
-Every successful run begins with one workload line:
+Progress goes to stderr. A noninteractive stream prints 0%, 25%, 50%, 75%, and 100% for counted stages. A terminal
+redraws those milestones in place. File loading counts physical rows in all three modes. Smoke truth recomputation
+counts the 100 selected queries. Each constructor prints start and completion messages.
+
+Stdout is reserved for the complete validated report. An input, index, or result-validation error can leave progress
+on stderr and still produce an empty stdout. Append `> report.txt` to save the report while watching progress.
+
+The report starts with the workload and timing context. It gives the mode, row and query counts, dimension, metric,
+`k`, truth source, query selection and fingerprint, warm-up count, timed passes, concurrency, and cache regime.
+The `stages` line shows how the time was spent.
+
+| Field | What it covers |
+| --- | --- |
+| `load_validate_s` | SIFT file loading and validation, query selection, and in-memory dataset preparation |
+| `truth_s` | Selecting supplied truth or recomputing smoke truth with Flat |
+| `build_s` | Each of the five constructors, shown in its index row |
+| `warmup_s` | Warm-up phase wall time |
+| `timed_search_wall_s` | Timed pass wall time across all five indexes, including loop, result collection, and progress |
+| `validate_account_s` | Reading IVF-PQ byte counts, validating results, and preparing report rows |
+| `total_s` | Elapsed time from starting the benchmark to preparing the validated report, before stdout |
+
+Phase clocks can include progress and loop overhead. Each index's `search_s` is a sum of individual search calls within
+the timed pass. Read Cargo build time and report writing separately from the benchmark total.
+
+Warm-up runs the first `min(20, query_count)` queries through all five indexes. The timed pass uses every selected
+query exactly once per index. Let `query_ordinal` be the zero-based position in the selected query order. The
+starting index rotates at each position.
 
 ```text
-workload: mode={sift1m-full|sift1m-smoke}, parity={bustub-sift1m|non-parity}, rows={1000000|10000}, dimensions=128, queries={10000|100}, metric=euclidean, k=100, truth={supplied-sift1m-top-100|recomputed-flat-selected-base-top-100}
+(query_ordinal + offset) % 5
 ```
 
-Five rows follow in `flat`, `ivf_flat`, `nsw`, `hnsw`, `ivf_pq` order:
+Only `search(query, 100)` is inside each latency sample. Result validation, quality calculation, latency sorting, and
+formatting happen afterward. `serial_qps` divides the query count by the sum of that index's latency samples, with
+one search call at a time. Use p50 and p95 to describe the distribution of those samples. Treat p99 as exploratory.
+In sampled mode the slowest 1% is only about ten queries.
+
+The index rows appear in `flat`, `ivf_flat`, `nsw`, `hnsw`, `ivf_pq` order.
 
 ```text
-{name}: config={stable-config}, build_s={:.3}, search_s={:.3}, qps={:.1}, first_hit@1={:.4}, first_hit@10={:.4}, first_hit@100={:.4}, overlap@100={:.4}, returned_min={n}, returned_avg={:.1}, returned_max={n}, p50_ms={:.3}, p99_ms={:.3}
+{name}: config={stable-config}, build_s={:.3}, search_s={:.3}, serial_qps={:.1}, exact_nn_hit@1={:.4}, exact_nn_hit@10={:.4}, exact_nn_hit@100={:.4}, recall@100={:.4}, returned_min={n}, returned_avg={:.1}, returned_max={n}, p50_ms={:.3}, p95_ms={:.3}, p99_ms={:.3}
 ```
 
-The final line is narrower than a memory measurement:
+## Interpret Quality and Under-fill
+
+For each query, `recall@100` is the fraction of the exact top 100 IDs that the index returns. The denominator stays
+100. If an index returns 50 valid rows and all are exact neighbors, recall is 0.5. Reported recall averages over all
+selected queries. Use the returned-count fields to see when under-fill contributes to missed neighbors.
+
+The `exact_nn_hit@1`, `exact_nn_hit@10`, and `exact_nn_hit@100` fields track whether the single first exact ID
+appears within each returned prefix. Each hit is 0 or 1 for one query, and the fields average those hits across
+queries. A wider prefix can only maintain or increase the hit rate.
+
+The report checks row bounds, finite distances, distinct IDs, and public nearest-first `Neighbor` order. Shorter
+results can pass validation. Flat must return 100 rows and reach 1.0 for every quality field. The ignored smoke
+tests also require 100 distinct rows per configured index and enforce broad 0.05 `exact_nn_hit@100` and
+`recall@100` floors for the approximate indexes as integration checks.
+
+The final line compares the size of IVF-PQ codes and codebooks with the original vector components.
 
 ```text
 ivf_pq search representation: codes_bytes={u64}, codebooks_bytes={u64}, search_bytes={u64}, full_vectors_bytes={u64}, compression={:.1}x
 ```
 
-For the full data, four million code bytes plus 8,192 codebook bytes produce a 4,008,192-byte search representation.
-Compared with 512,000,000 full-vector component bytes, the line prints `127.7x`. That ratio describes only codes plus
-codebooks versus vector components. It excludes the original vectors retained for reranking, coarse centroids, row IDs,
-list and graph containers, allocator overhead, and the other four live indexes. It is not resident memory or total-index
-compression.
+In sampled and full modes, 4,000,000 code bytes plus 8,192 codebook bytes give a 4,008,192-byte representation.
+Compared with 512,000,000 full-vector component bytes, the ratio is `127.7x`. Its scope is limited to these
+components. The original vectors for reranking, coarse centroids, IDs, list containers, allocator overhead, and
+other live indexes also take space.
 
-Record timings and quality only from a run you actually performed, together with its mode, machine, and fixed
-configuration. One run cannot establish a universal fastest index, quality ranking, latency threshold, general
-exactness, or graph connectivity.
-
-## Finish the Course Boundary
-
-The focused and cumulative gates compile the benchmark but skip the ignored SIFT1M tests:
-
-```sh
-cargo xtask test day_06
-cargo xtask test-through day_06
-```
-
-Once they pass, you have a complete corpus-free implementation boundary. Smoke mode is the practical first external
-check when you have acquired SIFT1M. The full-data command above remains optional: run it only with the corpus and
-resources available, and treat any numbers it produces as observations from that machine and configuration—not as
-measurements supplied or promised by the course.
+Compare recall and p50/p95 within the same workload. Save the report with the exact command, source revision,
+CPU and memory, operating system, `rustc -Vv`, build profile, and any custom compiler flags. Each invocation uses
+freshly built and warmed indexes, with one timed pass. Record the process count and starting cache conditions
+when you repeat a comparison. The resulting measurements describe the machine, workload, and configuration you ran.
 
 {{#include copyright.md}}

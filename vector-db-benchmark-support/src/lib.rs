@@ -15,17 +15,20 @@ const QUERY_BYTES: u64 = 5_160_000;
 const GROUND_TRUTH_BYTES: u64 = 4_040_000;
 const SMOKE_BASE_ROWS: usize = 10_000;
 const SMOKE_QUERY_ROWS: usize = 100;
+const SAMPLED_QUERY_ROWS: usize = 1_000;
+const SAMPLE_SEED: u64 = 0x5eed;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     Full,
+    Sampled,
     Smoke,
 }
 
 impl Mode {
     pub fn base_rows(self) -> usize {
         match self {
-            Self::Full => BASE_ROWS,
+            Self::Full | Self::Sampled => BASE_ROWS,
             Self::Smoke => SMOKE_BASE_ROWS,
         }
     }
@@ -33,6 +36,7 @@ impl Mode {
     pub fn query_rows(self) -> usize {
         match self {
             Self::Full => QUERY_ROWS,
+            Self::Sampled => SAMPLED_QUERY_ROWS,
             Self::Smoke => SMOKE_QUERY_ROWS,
         }
     }
@@ -40,6 +44,7 @@ impl Mode {
     pub fn mode_label(self) -> &'static str {
         match self {
             Self::Full => "sift1m-full",
+            Self::Sampled => "sift1m-sampled",
             Self::Smoke => "sift1m-smoke",
         }
     }
@@ -47,9 +52,50 @@ impl Mode {
     pub fn parity_label(self) -> &'static str {
         match self {
             Self::Full => "bustub-sift1m",
-            Self::Smoke => "non-parity",
+            Self::Sampled | Self::Smoke => "non-parity",
         }
     }
+
+    pub fn query_selection_label(self) -> String {
+        match self {
+            Self::Full => "all-in-file-order".into(),
+            Self::Smoke => "first-100-in-file-order".into(),
+            Self::Sampled => format!("splitmix64-key-rank-v1(seed={SAMPLE_SEED:#x})"),
+        }
+    }
+
+    fn query_ordinals(self) -> Vec<usize> {
+        if self != Self::Sampled {
+            return (0..self.query_rows()).collect();
+        }
+
+        // Rank all query ordinals by a fixed SplitMix64 key, then read the selected rows
+        // in corpus order. Using the same ordinal list for both files preserves pairing.
+        let mut ordinals = (0..QUERY_ROWS).collect::<Vec<_>>();
+        ordinals.sort_unstable_by_key(|&ordinal| sample_key(ordinal as u64));
+        ordinals.truncate(SAMPLED_QUERY_ROWS);
+        ordinals.sort_unstable();
+        ordinals
+    }
+}
+
+fn sample_key(ordinal: u64) -> u64 {
+    let mut word = ordinal
+        .wrapping_add(SAMPLE_SEED)
+        .wrapping_add(0x9e37_79b9_7f4a_7c15);
+    word = (word ^ (word >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    word = (word ^ (word >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    word ^ (word >> 31)
+}
+
+/// FNV-1a over the selected zero-based ordinals encoded as little-endian u64s.
+pub fn query_ordinals_fingerprint(ordinals: &[usize]) -> u64 {
+    ordinals
+        .iter()
+        .flat_map(|&ordinal| (ordinal as u64).to_le_bytes())
+        .fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+        })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,6 +124,7 @@ pub struct SiftWorkload {
     pub mode: Mode,
     pub base: Vec<Vec<f32>>,
     pub queries: Vec<Vec<f32>>,
+    pub query_ordinals: Vec<usize>,
     pub supplied_ground_truth: Vec<Vec<usize>>,
 }
 
@@ -85,6 +132,13 @@ pub struct SiftWorkload {
 pub struct TimedRun<T> {
     pub latencies: Vec<Duration>,
     pub results: Vec<T>,
+}
+
+#[derive(Debug)]
+pub struct BalancedSearch<T> {
+    pub runs: Vec<TimedRun<T>>,
+    pub warmup_wall: Duration,
+    pub timed_search_wall: Duration,
 }
 
 #[derive(Debug)]
@@ -219,11 +273,13 @@ impl Progress<io::Sink> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct FirstHit {
+pub struct ExactNeighborHit {
     pub r1: f64,
     pub r10: f64,
     pub r100: f64,
 }
+
+pub use ExactNeighborHit as FirstHit;
 
 #[derive(Debug)]
 pub enum SiftError {
@@ -291,7 +347,7 @@ impl SiftError {
 impl Display for SiftError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Usage => write!(formatter, "usage: recall [--smoke] <sift1m-dir>"),
+            Self::Usage => write!(formatter, "usage: recall [--smoke|--sampled] <sift1m-dir>"),
             Self::Missing(path) => write!(formatter, "sift1m: missing {}", path.display()),
             Self::Io { file, source } => write!(formatter, "sift1m: {file}: {source}"),
             Self::Size {
@@ -376,21 +432,19 @@ where
     T: Into<OsString>,
 {
     let args = args.into_iter().map(Into::into).collect::<Vec<_>>();
-    match args.as_slice() {
-        [directory] if directory != "--smoke" && !directory.to_string_lossy().starts_with('-') => {
-            Ok(Cli {
-                mode: Mode::Full,
-                data_dir: PathBuf::from(directory),
-            })
-        }
-        [flag, directory] if flag == "--smoke" && !directory.to_string_lossy().starts_with('-') => {
-            Ok(Cli {
-                mode: Mode::Smoke,
-                data_dir: PathBuf::from(directory),
-            })
-        }
-        _ => Err(SiftError::Usage),
+    let (mode, directory) = match args.as_slice() {
+        [directory] => (Mode::Full, directory),
+        [flag, directory] if flag == "--smoke" => (Mode::Smoke, directory),
+        [flag, directory] if flag == "--sampled" => (Mode::Sampled, directory),
+        _ => return Err(SiftError::Usage),
+    };
+    if directory.to_string_lossy().starts_with('-') {
+        return Err(SiftError::Usage);
     }
+    Ok(Cli {
+        mode,
+        data_dir: PathBuf::from(directory),
+    })
 }
 
 pub fn load_sift1m(cli: &Cli) -> Result<SiftWorkload, SiftError> {
@@ -405,6 +459,8 @@ pub fn load_sift1m_with_progress<W: Write>(
     let base_path = cli.data_dir.join("sift_base.fvecs");
     let query_path = cli.data_dir.join("sift_query.fvecs");
     let ground_truth_path = cli.data_dir.join("sift_groundtruth.ivecs");
+    let query_ordinals = cli.mode.query_ordinals();
+    let query_selection = RowSelection::Ordinals(&query_ordinals);
 
     let base = load_fvecs(
         &base_path,
@@ -412,7 +468,7 @@ pub fn load_sift1m_with_progress<W: Write>(
         BASE_BYTES,
         BASE_ROWS,
         DIMENSIONS,
-        cli.mode.base_rows(),
+        RowSelection::Prefix(cli.mode.base_rows()),
         progress,
     )?;
     let queries = load_fvecs(
@@ -421,7 +477,7 @@ pub fn load_sift1m_with_progress<W: Write>(
         QUERY_BYTES,
         QUERY_ROWS,
         DIMENSIONS,
-        cli.mode.query_rows(),
+        query_selection,
         progress,
     )?;
     let supplied_ground_truth = load_ivecs(
@@ -429,7 +485,7 @@ pub fn load_sift1m_with_progress<W: Write>(
         GROUND_TRUTH_BYTES,
         QUERY_ROWS,
         GROUND_TRUTH_WIDTH,
-        cli.mode.query_rows(),
+        query_selection,
         BASE_ROWS,
         progress,
     )?;
@@ -438,6 +494,7 @@ pub fn load_sift1m_with_progress<W: Write>(
         mode: cli.mode,
         base,
         queries,
+        query_ordinals,
         supplied_ground_truth,
     })
 }
@@ -463,9 +520,23 @@ pub fn run_balanced_with_progress<T, E, W: Write>(
     index_count: usize,
     warm_query_count: usize,
     progress: &mut Progress<W>,
-    mut search: impl FnMut(usize, &[f32]) -> Result<T, E>,
+    search: impl FnMut(usize, &[f32]) -> Result<T, E>,
 ) -> Result<Vec<TimedRun<T>>, E> {
+    Ok(
+        run_balanced_with_stage_times(queries, index_count, warm_query_count, progress, search)?
+            .runs,
+    )
+}
+
+pub fn run_balanced_with_stage_times<T, E, W: Write>(
+    queries: &[Vec<f32>],
+    index_count: usize,
+    warm_query_count: usize,
+    progress: &mut Progress<W>,
+    mut search: impl FnMut(usize, &[f32]) -> Result<T, E>,
+) -> Result<BalancedSearch<T>, E> {
     assert!(index_count > 0);
+    let warmup_started = Instant::now();
     if warm_query_count > 0 {
         progress.begin("warm search", "rounds", warm_query_count, Some(index_count));
     }
@@ -479,6 +550,7 @@ pub fn run_balanced_with_progress<T, E, W: Write>(
     if warm_query_count > 0 {
         progress.finish();
     }
+    let warmup_wall = warmup_started.elapsed();
 
     let mut runs = (0..index_count)
         .map(|_| TimedRun {
@@ -486,6 +558,7 @@ pub fn run_balanced_with_progress<T, E, W: Write>(
             results: Vec::with_capacity(queries.len()),
         })
         .collect::<Vec<_>>();
+    let timed_search_started = Instant::now();
     if !queries.is_empty() {
         progress.begin("timed search", "rounds", queries.len(), Some(index_count));
     }
@@ -505,19 +578,23 @@ pub fn run_balanced_with_progress<T, E, W: Write>(
     if !queries.is_empty() {
         progress.finish();
     }
-    Ok(runs)
+    Ok(BalancedSearch {
+        runs,
+        warmup_wall,
+        timed_search_wall: timed_search_started.elapsed(),
+    })
 }
 
-pub fn first_hit(results: &[usize], exact_first: usize) -> FirstHit {
+pub fn exact_nn_hit(results: &[usize], exact_first: usize) -> ExactNeighborHit {
     let contains = |rank: usize| results.iter().take(rank).any(|row| *row == exact_first);
-    FirstHit {
+    ExactNeighborHit {
         r1: f64::from(contains(1)),
         r10: f64::from(contains(10)),
         r100: f64::from(contains(100)),
     }
 }
 
-pub fn overlap_at_100(results: &[usize], exact_top_100: &[usize]) -> f64 {
+pub fn recall_at_100(results: &[usize], exact_top_100: &[usize]) -> f64 {
     assert_eq!(exact_top_100.len(), GROUND_TRUTH_WIDTH);
     let returned = results.iter().copied().collect::<HashSet<_>>();
     exact_top_100
@@ -526,6 +603,9 @@ pub fn overlap_at_100(results: &[usize], exact_top_100: &[usize]) -> f64 {
         .count() as f64
         / GROUND_TRUTH_WIDTH as f64
 }
+
+pub use exact_nn_hit as first_hit;
+pub use recall_at_100 as overlap_at_100;
 
 pub fn percentile(sorted: &[Duration], percent: usize) -> Duration {
     assert!(!sorted.is_empty());
@@ -564,13 +644,35 @@ fn open_checked(path: &Path, file: &str, expected_size: u64) -> Result<BufReader
     Ok(BufReader::new(handle))
 }
 
+#[derive(Clone, Copy)]
+enum RowSelection<'a> {
+    Prefix(usize),
+    Ordinals(&'a [usize]),
+}
+
+impl RowSelection<'_> {
+    fn len(self) -> usize {
+        match self {
+            Self::Prefix(count) => count,
+            Self::Ordinals(ordinals) => ordinals.len(),
+        }
+    }
+
+    fn keeps(self, record: usize, retained: usize) -> bool {
+        match self {
+            Self::Prefix(count) => record < count,
+            Self::Ordinals(ordinals) => ordinals.get(retained) == Some(&record),
+        }
+    }
+}
+
 fn load_fvecs<W: Write>(
     path: &Path,
     file: &str,
     expected_size: u64,
     records: usize,
     dimensions: usize,
-    retain: usize,
+    retain: RowSelection<'_>,
     progress: &mut Progress<W>,
 ) -> Result<Vec<Vec<f32>>, SiftError> {
     let mut reader = open_checked(path, file, expected_size)?;
@@ -582,7 +684,7 @@ fn load_ivecs<W: Write>(
     expected_size: u64,
     records: usize,
     dimensions: usize,
-    retain: usize,
+    retain: RowSelection<'_>,
     upper_bound: usize,
     progress: &mut Progress<W>,
 ) -> Result<Vec<Vec<usize>>, SiftError> {
@@ -670,7 +772,14 @@ fn read_fvecs<R: Read>(
     retain: usize,
 ) -> Result<Vec<Vec<f32>>, SiftError> {
     let mut progress = Progress::silent();
-    read_fvecs_with_progress(reader, file, records, dimensions, retain, &mut progress)
+    read_fvecs_with_progress(
+        reader,
+        file,
+        records,
+        dimensions,
+        RowSelection::Prefix(retain),
+        &mut progress,
+    )
 }
 
 fn read_fvecs_with_progress<R: Read, W: Write>(
@@ -678,14 +787,14 @@ fn read_fvecs_with_progress<R: Read, W: Write>(
     file: &str,
     records: usize,
     dimensions: usize,
-    retain: usize,
+    retain: RowSelection<'_>,
     progress: &mut Progress<W>,
 ) -> Result<Vec<Vec<f32>>, SiftError> {
-    assert!(retain <= records);
+    assert!(retain.len() <= records);
     progress.begin(format!("load {file}"), "rows", records, None);
     let payload_bytes = dimensions.checked_mul(4).expect("vector width overflow");
     let mut payload = vec![0_u8; payload_bytes];
-    let mut retained = Vec::with_capacity(retain);
+    let mut retained = Vec::with_capacity(retain.len());
     for record in 0..records {
         let actual = read_header(reader, file, record)?;
         check_dimension(file, record, dimensions, actual)?;
@@ -698,7 +807,7 @@ fn read_fvecs_with_progress<R: Read, W: Write>(
                 actual: actual_bytes,
             });
         }
-        let keep = record < retain;
+        let keep = retain.keeps(record, retained.len());
         let mut values = keep.then(|| Vec::with_capacity(dimensions));
         for (component, bytes) in payload.as_chunks::<4>().0.iter().enumerate() {
             let value = f32::from_bits(u32::from_le_bytes(*bytes));
@@ -719,6 +828,7 @@ fn read_fvecs_with_progress<R: Read, W: Write>(
         progress.advance(record + 1);
     }
     check_trailing(reader, file, records)?;
+    assert_eq!(retained.len(), retain.len());
     progress.finish();
     Ok(retained)
 }
@@ -738,7 +848,7 @@ fn read_ivecs<R: Read>(
         file,
         records,
         dimensions,
-        retain,
+        RowSelection::Prefix(retain),
         upper_bound,
         &mut progress,
     )
@@ -749,15 +859,15 @@ fn read_ivecs_with_progress<R: Read, W: Write>(
     file: &str,
     records: usize,
     dimensions: usize,
-    retain: usize,
+    retain: RowSelection<'_>,
     upper_bound: usize,
     progress: &mut Progress<W>,
 ) -> Result<Vec<Vec<usize>>, SiftError> {
-    assert!(retain <= records);
+    assert!(retain.len() <= records);
     progress.begin(format!("load {file}"), "rows", records, None);
     let payload_bytes = dimensions.checked_mul(4).expect("vector width overflow");
     let mut payload = vec![0_u8; payload_bytes];
-    let mut retained = Vec::with_capacity(retain);
+    let mut retained = Vec::with_capacity(retain.len());
     for record in 0..records {
         let actual = read_header(reader, file, record)?;
         check_dimension(file, record, dimensions, actual)?;
@@ -771,7 +881,7 @@ fn read_ivecs_with_progress<R: Read, W: Write>(
             });
         }
         let mut seen = HashSet::with_capacity(dimensions);
-        let keep = record < retain;
+        let keep = retain.keeps(record, retained.len());
         let mut values = keep.then(|| Vec::with_capacity(dimensions));
         for (id, bytes) in payload.as_chunks::<4>().0.iter().enumerate() {
             let signed = i32::from_le_bytes(*bytes);
@@ -801,6 +911,7 @@ fn read_ivecs_with_progress<R: Read, W: Write>(
         progress.advance(record + 1);
     }
     check_trailing(reader, file, records)?;
+    assert_eq!(retained.len(), retain.len());
     progress.finish();
     Ok(retained)
 }
@@ -879,7 +990,7 @@ mod day_06 {
         }
 
         #[test]
-        fn cli_requires_an_explicit_full_or_fixed_smoke_run() {
+        fn cli_accepts_full_and_both_fixed_query_modes() {
             assert_eq!(
                 parse_cli(["/data/sift1M"]).unwrap(),
                 Cli {
@@ -891,10 +1002,70 @@ mod day_06 {
                 parse_cli(["--smoke", "/data/sift1M"]).unwrap().mode,
                 Mode::Smoke
             );
-            for invalid in [vec![], vec!["--other"], vec!["/data", "--smoke"]] {
+            assert_eq!(
+                parse_cli(["--sampled", "/data/sift1M"]).unwrap().mode,
+                Mode::Sampled
+            );
+            for invalid in [
+                vec![],
+                vec!["--other"],
+                vec!["/data", "--smoke"],
+                vec!["--sampled"],
+                vec!["--sampled=10", "/data"],
+                vec!["--sampled", "/data", "10"],
+                vec!["--smoke", "--sampled", "/data"],
+            ] {
                 assert!(matches!(parse_cli(invalid), Err(SiftError::Usage)));
             }
             assert_eq!(SiftError::Usage.exit_code(), 2);
+        }
+
+        #[test]
+        fn sampled_ordinals_match_the_fixed_order_and_fingerprint() {
+            let ordinals = Mode::Sampled.query_ordinals();
+            assert_eq!(ordinals.len(), 1_000);
+            assert!(ordinals.is_sorted_by(|left, right| left < right));
+            assert_eq!(&ordinals[..6], &[0, 25, 45, 46, 47, 58]);
+            assert_eq!(&ordinals[994..], &[9967, 9975, 9976, 9977, 9987, 9997]);
+            assert_eq!(query_ordinals_fingerprint(&ordinals), 0x3dae_c467_e7c9_a97a);
+        }
+
+        #[test]
+        fn sparse_selection_preserves_pairs_and_validates_skipped_rows() {
+            let selection = RowSelection::Ordinals(&[1, 3]);
+            let read_queries = |rows: &[&[f32]]| {
+                read_fvecs_with_progress(
+                    &mut Cursor::new(fvecs(rows)),
+                    "sift_query.fvecs",
+                    4,
+                    1,
+                    selection,
+                    &mut Progress::silent(),
+                )
+            };
+            let read_truth = |rows: &[&[i32]]| {
+                read_ivecs_with_progress(
+                    &mut Cursor::new(ivecs(rows)),
+                    "sift_groundtruth.ivecs",
+                    4,
+                    1,
+                    selection,
+                    4,
+                    &mut Progress::silent(),
+                )
+            };
+            let queries = read_queries(&[&[10.0], &[11.0], &[12.0], &[13.0]]).unwrap();
+            let truth = read_truth(&[&[0], &[1], &[2], &[3]]).unwrap();
+            assert_eq!(queries, [vec![11.0], vec![13.0]]);
+            assert_eq!(truth, [vec![1], vec![3]]);
+            assert!(matches!(
+                read_queries(&[&[10.0], &[11.0], &[f32::NAN], &[13.0]]),
+                Err(SiftError::NonFinite { record: 2, .. })
+            ));
+            assert!(matches!(
+                read_truth(&[&[0], &[1], &[4], &[3]]),
+                Err(SiftError::OutOfRangeId { record: 2, .. })
+            ));
         }
 
         #[test]
@@ -1033,7 +1204,11 @@ mod day_06 {
 
         #[test]
         fn balanced_runner_warms_twenty_then_times_every_query_cyclically() {
-            let queries = (0..23).map(|query| vec![query as f32]).collect::<Vec<_>>();
+            let query_rows = (100..146).step_by(2).collect::<Vec<_>>();
+            let queries = query_rows
+                .iter()
+                .map(|&row| vec![row as f32])
+                .collect::<Vec<_>>();
             let trace = RefCell::new(Vec::new());
             let runs = run_balanced(&queries, 5, 20, |index, query| {
                 trace.borrow_mut().push((index, query[0] as usize));
@@ -1047,14 +1222,18 @@ mod day_06 {
                     assert!(query < phase_queries);
                     for (offset, (index, observed)) in calls.iter().enumerate() {
                         assert_eq!(*index, (query + offset) % 5);
-                        assert_eq!(*observed, query);
+                        assert_eq!(*observed, query_rows[query]);
                     }
                 }
             }
-            assert!(
-                runs.iter()
-                    .all(|run| run.results.len() == 23 && run.latencies.len() == 23)
-            );
+            for (index, run) in runs.iter().enumerate() {
+                assert_eq!(run.latencies.len(), 23);
+                let expected = query_rows
+                    .iter()
+                    .map(|&row| (index, row))
+                    .collect::<Vec<_>>();
+                assert_eq!(run.results, expected);
+            }
         }
 
         #[test]
@@ -1149,7 +1328,7 @@ mod day_06 {
                 "tiny.fvecs",
                 4,
                 2,
-                1,
+                RowSelection::Prefix(1),
                 &mut progress,
             )
             .unwrap();
@@ -1198,10 +1377,16 @@ mod day_06 {
                 },
                 false,
             );
-            let runs = run_balanced_with_progress(&queries, 1, 0, &mut slow, |_index, query| {
+            let BalancedSearch {
+                runs,
+                warmup_wall,
+                timed_search_wall,
+            } = run_balanced_with_stage_times(&queries, 1, 1, &mut slow, |_index, query| {
                 Ok::<_, ()>(query[0])
             })
             .unwrap();
+            assert!(warmup_wall >= Duration::from_millis(40));
+            assert!(timed_search_wall >= Duration::from_millis(40));
             assert_eq!(runs[0].latencies.len(), 4);
             assert!(
                 runs[0]
@@ -1228,6 +1413,9 @@ mod day_06 {
             assert_eq!(Mode::Full.base_rows(), 1_000_000);
             assert_eq!(Mode::Full.query_rows(), 10_000);
             assert_eq!(Mode::Full.parity_label(), "bustub-sift1m");
+            assert_eq!(Mode::Sampled.base_rows(), 1_000_000);
+            assert_eq!(Mode::Sampled.query_rows(), 1_000);
+            assert_eq!(Mode::Sampled.parity_label(), "non-parity");
             assert_eq!(Mode::Smoke.base_rows(), 10_000);
             assert_eq!(Mode::Smoke.query_rows(), 100);
             assert_eq!(Mode::Smoke.parity_label(), "non-parity");
